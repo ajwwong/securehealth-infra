@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# CDK
+cdk.out/
+cdk.context.json
+
+# Environment
+.env
+*.pem
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
