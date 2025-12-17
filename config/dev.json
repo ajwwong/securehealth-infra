@@ -1,0 +1,9 @@
+{
+  "name": "dev",
+  "stackName": "SecureHealthDevStack",
+  "accountNumber": "277707120168",
+  "region": "us-east-1",
+  "domainName": "securehealth.me",
+  "skipDns": true,
+  "maxAzs": 2
+}
