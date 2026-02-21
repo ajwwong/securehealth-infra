@@ -1,0 +1,5 @@
+{
+  "medplumBaseUrl": "https://api.progressnotes.app",
+  "medplumClientId": "YOUR_CLIENT_APPLICATION_ID",
+  "medplumClientSecret": "YOUR_CLIENT_APPLICATION_SECRET"
+}

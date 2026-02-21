@@ -10,6 +10,7 @@ cdk.context.json
 # Environment
 .env
 *.pem
+config/booking.json
 
 # System files
 .DS_Store
