@@ -86,6 +86,13 @@ export class DirectoryApiStack extends Stack {
       integration,
     });
 
+    // Cora: Check email deletion status
+    api.addRoutes({
+      path: '/api/cora/check-email',
+      methods: [HttpMethod.POST],
+      integration,
+    });
+
     // Output the API URL for configuration
     new CfnOutput(this, 'DirectoryApiUrl', {
       value: api.url!,

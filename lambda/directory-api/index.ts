@@ -20,6 +20,7 @@ const PRACTITIONER_BIO_EXT = `${BASE_EXT}/practitioner-bio`;
 const PRACTITIONER_PHOTO_EXT = `${BASE_EXT}/practitioner-photo-url`;
 const PRACTITIONER_SPECIALTIES_EXT = `${BASE_EXT}/practitioner-specialties`;
 const INSURANCE_ACCEPTED_EXT = `${BASE_EXT}/insurance-accepted`;
+const ACCOUNT_DELETED_EXT = `${BASE_EXT}/account-deleted`;
 const PORTAL_SLUG_SYSTEM = 'https://progressnotes.app/portal-slug';
 
 // Reuse MedplumClient across warm Lambda invocations
@@ -107,6 +108,12 @@ export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayRespons
     if (method === 'POST' && path === '/api/directory/booking-request') {
       const body = event.body ? JSON.parse(event.body) : {};
       return await handleBookingRequest(body);
+    }
+
+    // POST /api/cora/check-email - Check if email is associated with a deleted Cora account
+    if (method === 'POST' && path === '/api/cora/check-email') {
+      const body = event.body ? JSON.parse(event.body) : {};
+      return await handleCheckEmail(body);
     }
 
     return jsonResponse(404, { error: 'Not found' });
@@ -539,4 +546,46 @@ async function handleBookingRequest(body: any): Promise<ApiGatewayResponse> {
   const redirectUrl = `https://${portalSlug}.securehealth.me/book?${params.toString()}`;
 
   return jsonResponse(200, { redirectUrl });
+}
+
+// ─── POST /api/cora/check-email ──────────────────────────────────────────────
+
+async function handleCheckEmail(body: any): Promise<ApiGatewayResponse> {
+  const { email } = body;
+
+  if (!email) {
+    return jsonResponse(400, { error: 'Missing email' });
+  }
+
+  const medplum = await getMedplum();
+
+  try {
+    // Search for Patient with this email
+    const patients = await medplum.searchResources('Patient', {
+      email: email.toLowerCase(),
+      _count: '10',
+    });
+
+    if (patients.length === 0) {
+      // No patient found - email is available for registration
+      return jsonResponse(200, { exists: false, isDeleted: false });
+    }
+
+    // Check if any patient with this email has the account-deleted extension
+    for (const patient of patients) {
+      const deletedExt = patient.extension?.find((e) => e.url === ACCOUNT_DELETED_EXT);
+      if (deletedExt) {
+        // Found a deleted account with this email
+        return jsonResponse(200, { exists: true, isDeleted: true });
+      }
+    }
+
+    // Patient exists but is not deleted
+    return jsonResponse(200, { exists: true, isDeleted: false });
+  } catch (err: any) {
+    console.error('Error checking email:', err);
+    // On error, return false to allow registration attempt
+    // (Medplum will still block duplicate emails)
+    return jsonResponse(200, { exists: false, isDeleted: false });
+  }
 }
