@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { StaticSiteStack } from './static-site-stack';
 import { BookingApiStack } from './booking-api-stack';
+import { DirectoryApiStack } from './directory-api-stack';
 
 function main(): void {
   const app = new App();
@@ -30,6 +31,21 @@ function main(): void {
       medplumClientId: bookingConfig.medplumClientId,
       medplumClientSecret: bookingConfig.medplumClientSecret,
       recaptchaSecretKey: bookingConfig.recaptchaSecretKey,
+    });
+  }
+
+  // Directory API stack (requires config/directory.json with Medplum credentials)
+  const directoryConfigPath = resolve('config/directory.json');
+  if (existsSync(directoryConfigPath)) {
+    const directoryConfig = JSON.parse(readFileSync(directoryConfigPath, 'utf-8'));
+    new DirectoryApiStack(app, `${directoryConfig.name}-DirectoryApi`, {
+      name: directoryConfig.name,
+      region: directoryConfig.region,
+      accountNumber: directoryConfig.accountNumber,
+      medplumBaseUrl: directoryConfig.medplumBaseUrl,
+      medplumClientId: directoryConfig.medplumClientId,
+      medplumClientSecret: directoryConfig.medplumClientSecret,
+      recaptchaSecretKey: directoryConfig.recaptchaSecretKey,
     });
   }
 

@@ -11,6 +11,8 @@ cdk.context.json
 .env
 *.pem
 config/booking.json
+config/directory.json
+config/findtherapist.json
 
 # System files
 .DS_Store
