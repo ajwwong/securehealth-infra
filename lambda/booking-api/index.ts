@@ -230,11 +230,25 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
   const allowCouples = org.extension?.find((e) => e.url === ALLOW_NEW_COUPLES_EXT)?.valueBoolean === true;
 
   // Parse prescreener questions from Organization extension (stored as JSON string)
+  // Only return questions that are visible and enabled for the booking widget
+  const prescreenerEnabled = org.extension?.find(
+    (e) => e.url === PRESCREENER_QUESTIONS_EXT + '-booking-enabled'
+  )?.valueBoolean === true;
   const prescreenerJson = org.extension?.find((e) => e.url === PRESCREENER_QUESTIONS_EXT)?.valueString;
   let prescreener: unknown[] | undefined;
-  if (prescreenerJson) {
+  if (prescreenerEnabled && prescreenerJson) {
     try {
-      prescreener = JSON.parse(prescreenerJson);
+      const allQuestions = JSON.parse(prescreenerJson) as Array<{
+        visible?: boolean;
+        placement?: string;
+        [key: string]: unknown;
+      }>;
+      const filtered = allQuestions.filter(
+        (q) => q.visible !== false && (!q.placement || q.placement === 'booking' || q.placement === 'both')
+      );
+      if (filtered.length > 0) {
+        prescreener = filtered;
+      }
     } catch {
       // Invalid JSON — skip prescreener
     }
