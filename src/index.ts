@@ -4,6 +4,7 @@ import { resolve } from 'path';
 import { StaticSiteStack } from './static-site-stack';
 import { BookingApiStack } from './booking-api-stack';
 import { DirectoryApiStack } from './directory-api-stack';
+import { WidgetStack } from './widget-stack';
 
 function main(): void {
   const app = new App();
@@ -46,6 +47,20 @@ function main(): void {
       medplumClientId: directoryConfig.medplumClientId,
       medplumClientSecret: directoryConfig.medplumClientSecret,
       recaptchaSecretKey: directoryConfig.recaptchaSecretKey,
+    });
+  }
+
+  // Widget CDN stack (requires config/widget.json with domain + SSL cert)
+  const widgetConfigPath = resolve('config/widget.json');
+  if (existsSync(widgetConfigPath)) {
+    const widgetConfig = JSON.parse(readFileSync(widgetConfigPath, 'utf-8'));
+    new WidgetStack(app, `${config.name}-Widget`, {
+      stackName: `${config.name}-Widget`,
+      name: config.name,
+      region: config.region,
+      accountNumber: config.accountNumber,
+      domainName: widgetConfig.domainName,
+      sslCertArn: widgetConfig.sslCertArn,
     });
   }
 

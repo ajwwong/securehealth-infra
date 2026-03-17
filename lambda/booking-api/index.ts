@@ -20,6 +20,7 @@ const ALLOW_NEW_COUPLES_EXT = `${BASE_EXT}/allow-new-couples`;
 const LOCATION_DISPLAY_PUBLICLY_EXT = `${BASE_EXT}/location-display-publicly`;
 const PRACTICE_LOGO_BINARY_ID_EXT = `${BASE_EXT}/practice-logo-binary-id`;
 const TIMEZONE_EXT = `${BASE_EXT}/timezone`;
+const PRESCREENER_QUESTIONS_EXT = `${BASE_EXT}/booking-prescreener-questions`;
 
 // Reuse MedplumClient across warm Lambda invocations
 let medplumClient: MedplumClient | null = null;
@@ -101,6 +102,9 @@ export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayRespons
     } else if (method === 'POST' && path.endsWith('/request')) {
       const body = event.body ? JSON.parse(event.body) : {};
       return await handlePostRequest(slug, body);
+    } else if (method === 'POST' && path.endsWith('/contact')) {
+      const body = event.body ? JSON.parse(event.body) : {};
+      return await handlePostContact(slug, body);
     } else {
       return jsonResponse(404, { error: 'Not found' });
     }
@@ -199,11 +203,17 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
               ?.map((q) => q.code?.text || q.code?.coding?.[0]?.display)
               .filter(Boolean)
               .join(', ');
+            // Check per-practitioner accepting status (default true if not set)
+            const practAccepting = pract.extension?.find(
+              (e: any) => e.url === ALLOW_NEW_CLIENTS_EXT
+            )?.valueBoolean ?? true;
+
             practitioners.push({
               id: practId,
               name: displayName,
               credentials: credentials || undefined,
               scheduleId: schedule.id!,
+              acceptingNewClients: practAccepting,
             });
           } catch {
             // Skip practitioners we can't read
@@ -219,6 +229,20 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
   const timezone = org.extension?.find((e) => e.url === TIMEZONE_EXT)?.valueString;
   const allowCouples = org.extension?.find((e) => e.url === ALLOW_NEW_COUPLES_EXT)?.valueBoolean === true;
 
+  // Parse prescreener questions from Organization extension (stored as JSON string)
+  const prescreenerJson = org.extension?.find((e) => e.url === PRESCREENER_QUESTIONS_EXT)?.valueString;
+  let prescreener: unknown[] | undefined;
+  if (prescreenerJson) {
+    try {
+      prescreener = JSON.parse(prescreenerJson);
+    } catch {
+      // Invalid JSON — skip prescreener
+    }
+  }
+
+  // Filter out practitioners not accepting new clients
+  const acceptingPractitioners = practitioners.filter((p) => p.acceptingNewClients !== false);
+
   return jsonResponse(200, {
     practiceName: org.name,
     phone,
@@ -227,9 +251,10 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
       : undefined,
     timezone,
     allowCouples,
+    prescreener,
     locations: publicLocations,
     services,
-    practitioners,
+    practitioners: acceptingPractitioners,
   });
 }
 
@@ -480,6 +505,12 @@ async function handlePostRequest(slug: string, body: any): Promise<ApiGatewayRes
         partnerPhone: body.partnerPhone || undefined,
         partnerDateOfBirth: body.partnerDateOfBirth || undefined,
         partnerPreferredName: body.partnerPreferredName || undefined,
+        careRecipient: body.careRecipient || undefined,
+        prescreenerAnswers: body.prescreenerAnswers || undefined,
+        guardianFirstName: body.guardianFirstName || undefined,
+        guardianLastName: body.guardianLastName || undefined,
+        guardianEmail: body.guardianEmail || undefined,
+        guardianPhone: body.guardianPhone || undefined,
         honeypot: body.honeypot || undefined,
         submittedAt: body.submittedAt || undefined,
       },
@@ -494,5 +525,55 @@ async function handlePostRequest(slug: string, body: any): Promise<ApiGatewayRes
   } catch (err) {
     console.error('Failed to execute new-client-request-handler bot:', err);
     return jsonResponse(500, { success: false, error: 'Failed to process request' });
+  }
+}
+
+// ─── POST /api/booking/{slug}/contact ─────────────────────────────────────
+
+async function handlePostContact(slug: string, body: any): Promise<ApiGatewayResponse> {
+  if (!body.firstName || !body.lastName || !body.email || !body.message) {
+    return jsonResponse(400, { error: 'Missing required fields: firstName, lastName, email, message' });
+  }
+
+  // reCAPTCHA verification
+  const recaptchaSecret = process.env.RECAPTCHA_SECRET_KEY;
+  if (recaptchaSecret && body.recaptchaToken) {
+    try {
+      const recaptchaResult = await verifyRecaptcha(recaptchaSecret, body.recaptchaToken);
+      if (!recaptchaResult.success || (recaptchaResult.score !== undefined && recaptchaResult.score < 0.3)) {
+        return jsonResponse(400, { success: false, error: 'Verification failed. Please try again.' });
+      }
+    } catch {
+      // Fail open
+    }
+  }
+
+  const medplum = await getMedplum();
+
+  try {
+    const result = await medplum.executeBot(
+      { system: 'https://progressnotes.app', value: 'new-client-request-handler' },
+      {
+        action: 'contact',
+        slug,
+        firstName: body.firstName,
+        lastName: body.lastName,
+        email: body.email,
+        phone: body.phone || undefined,
+        message: body.message,
+        honeypot: body.honeypot || undefined,
+        submittedAt: body.submittedAt || undefined,
+      },
+      'application/json'
+    ) as any;
+
+    if (result?.success) {
+      return jsonResponse(200, { success: true });
+    } else {
+      return jsonResponse(400, { success: false, error: result?.error || 'Failed to send message' });
+    }
+  } catch (err) {
+    console.error('Failed to execute contact handler:', err);
+    return jsonResponse(500, { success: false, error: 'Failed to send message' });
   }
 }

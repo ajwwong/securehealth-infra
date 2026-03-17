@@ -82,6 +82,12 @@ export class BookingApiStack extends Stack {
       integration,
     });
 
+    api.addRoutes({
+      path: '/api/booking/{slug}/contact',
+      methods: [HttpMethod.POST],
+      integration,
+    });
+
     // Output the API URL for configuration
     new CfnOutput(this, 'BookingApiUrl', {
       value: api.url!,

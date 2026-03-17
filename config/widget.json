@@ -1,0 +1,4 @@
+{
+  "domainName": "widget.practiceharbor.com",
+  "sslCertArn": "arn:aws:acm:us-east-1:277707120168:certificate/7d0777e0-7d6d-4947-88a6-2a0e8c98f9a1"
+}
