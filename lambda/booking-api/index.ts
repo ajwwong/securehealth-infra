@@ -78,6 +78,20 @@ function jsonResponse(statusCode: number, body: unknown): ApiGatewayResponse {
   };
 }
 
+// Input shape guards: these values are interpolated into FHIR search strings (token searches
+// treat commas as OR-lists), so constrain them to their expected shapes before use.
+const SLUG_PATTERN = /^[a-z0-9-]{1,64}$/i;
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/** True when the schedule belongs to the given organization (account or compartment). */
+function scheduleBelongsToOrg(schedule: { meta?: { account?: { reference?: string }; compartment?: { reference?: string }[] } }, organizationId: string): boolean {
+  const orgRef = `Organization/${organizationId}`;
+  if (schedule.meta?.account?.reference === orgRef) {
+    return true;
+  }
+  return (schedule.meta?.compartment || []).some((c) => c.reference === orgRef);
+}
+
 export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayResponse> {
   // Handle CORS preflight
   if (event.requestContext.http.method === 'OPTIONS') {
@@ -85,8 +99,8 @@ export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayRespons
   }
 
   const slug = event.pathParameters?.slug;
-  if (!slug) {
-    return jsonResponse(400, { error: 'Missing slug parameter' });
+  if (!slug || !SLUG_PATTERN.test(slug)) {
+    return jsonResponse(400, { error: 'Missing or invalid slug parameter' });
   }
 
   const path = event.rawPath;
@@ -280,8 +294,8 @@ async function handleGetAvailability(
 ): Promise<ApiGatewayResponse> {
   const { date, serviceCode, scheduleId } = queryParams;
 
-  if (!date) {
-    return jsonResponse(400, { error: 'Missing date parameter (YYYY-MM-DD)' });
+  if (!date || !DATE_PATTERN.test(date)) {
+    return jsonResponse(400, { error: 'Missing or invalid date parameter (YYYY-MM-DD)' });
   }
 
   const medplum = await getMedplum();
@@ -297,12 +311,13 @@ async function handleGetAvailability(
 
   const organizationId = org.id!;
 
-  // Find active schedules — if scheduleId is provided, only fetch that one
+  // Find active schedules — if scheduleId is provided, only fetch that one. The schedule must
+  // belong to this slug's practice: a caller-supplied id is otherwise unbound.
   let schedules;
   if (scheduleId) {
     try {
       const schedule = await medplum.readResource('Schedule', scheduleId);
-      schedules = schedule.active !== false ? [schedule] : [];
+      schedules = schedule.active !== false && scheduleBelongsToOrg(schedule, organizationId) ? [schedule] : [];
     } catch {
       schedules = [];
     }
@@ -376,8 +391,8 @@ async function handleGetAvailabilityDates(
 ): Promise<ApiGatewayResponse> {
   const { startDate, endDate, serviceCode, scheduleId } = queryParams;
 
-  if (!startDate || !endDate) {
-    return jsonResponse(400, { error: 'Missing startDate and/or endDate parameters (YYYY-MM-DD)' });
+  if (!startDate || !endDate || !DATE_PATTERN.test(startDate) || !DATE_PATTERN.test(endDate)) {
+    return jsonResponse(400, { error: 'Missing or invalid startDate/endDate parameters (YYYY-MM-DD)' });
   }
 
   const medplum = await getMedplum();
@@ -393,12 +408,12 @@ async function handleGetAvailabilityDates(
 
   const organizationId = org.id!;
 
-  // Find active schedules
+  // Find active schedules — a caller-supplied scheduleId must belong to this slug's practice.
   let schedules;
   if (scheduleId) {
     try {
       const schedule = await medplum.readResource('Schedule', scheduleId);
-      schedules = schedule.active !== false ? [schedule] : [];
+      schedules = schedule.active !== false && scheduleBelongsToOrg(schedule, organizationId) ? [schedule] : [];
     } catch {
       schedules = [];
     }
@@ -469,7 +484,10 @@ async function verifyRecaptcha(secretKey: string, token: string): Promise<{ succ
 // ─── POST /api/booking/{slug}/request ───────────────────────────────────────
 
 async function handlePostRequest(slug: string, body: any, sourceIp?: string): Promise<ApiGatewayResponse> {
-  if (!body.firstName || !body.lastName || !body.email) {
+  // A guardian booking for a minor may omit the client's email — the guardian email is the
+  // correspondence address (the bot enforces the same rule).
+  const hasReachableEmail = body.email || (body.careRecipient === 'someone-else' && body.guardianEmail);
+  if (!body.firstName || !body.lastName || !hasReachableEmail) {
     return jsonResponse(400, { error: 'Missing required fields: firstName, lastName, email' });
   }
 
