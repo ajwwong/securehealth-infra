@@ -221,11 +221,17 @@ async function handleSearchPractitioners(
 
   const medplum = await getMedplum();
 
-  // 1. Find organizations opted into directory
-  // Fetch more orgs to handle larger org counts
-  const orgs = await medplum.searchResources('Organization', {
-    _count: '500',
-  });
+  // 1. Find organizations opted into directory — paginated, so listed orgs beyond a single
+  // capped page can't silently drop out of the directory.
+  const orgs: Organization[] = [];
+  for (let orgOffset = 0; orgOffset < 5000; orgOffset += 500) {
+    const page = await medplum.searchResources('Organization', {
+      _count: '500',
+      _offset: String(orgOffset),
+    });
+    orgs.push(...page);
+    if (page.length < 500) break;
+  }
 
   console.log(`Found ${orgs.length} total organizations`);
 
@@ -252,7 +258,7 @@ async function handleSearchPractitioners(
 
   // 2. Search practitioners across listed organizations
   // Note: In production, you'd want more sophisticated cross-org querying
-  const allPractitioners: TransformedPractitioner[] = [];
+  const matched: Omit<TransformedPractitioner, 'nextAvailable'>[] = [];
 
   for (const { org, slug } of orgMap.values()) {
     const searchParams: Record<string, string> = {
@@ -295,20 +301,23 @@ async function handleSearchPractitioners(
         }
       }
 
-      // Get next available slots (limited preview)
-      const nextSlots = await getNextAvailableSlots(medplum, pract.id!, org.id!, 3);
-
-      allPractitioners.push({
-        ...transformed,
-        nextAvailable: nextSlots,
-      });
+      matched.push(transformed);
     }
   }
 
-  // Paginate
-  const total = allPractitioners.length;
+  // Paginate FIRST, then compute availability only for the page being returned. Availability is
+  // a calculate-availability bot execution per schedule — doing it for every match across every
+  // org on each unauthenticated request multiplied cost with directory size and invited abuse.
+  const total = matched.length;
   const totalPages = Math.ceil(total / limitNum);
-  const paginated = allPractitioners.slice(offset, offset + limitNum);
+  const pageItems = matched.slice(offset, offset + limitNum);
+
+  const paginated: TransformedPractitioner[] = await Promise.all(
+    pageItems.map(async (p) => ({
+      ...p,
+      nextAvailable: await getNextAvailableSlots(medplum, p.id, p.organization.id, 3),
+    }))
+  );
 
   return jsonResponse(200, {
     practitioners: paginated,
@@ -560,32 +569,26 @@ async function handleCheckEmail(body: any): Promise<ApiGatewayResponse> {
   const medplum = await getMedplum();
 
   try {
-    // Search for Patient with this email
+    // Answer ONLY whether this email once had an account that was deleted — that single case is
+    // what the app's registration screen needs a specific message for. Whether an email exists
+    // at all is deliberately not disclosed here: this is an unauthenticated endpoint, and an
+    // existence answer would let anyone probe arbitrary emails against every patient record in
+    // the system. Duplicate active emails are rejected by the registration endpoint itself,
+    // which the app already handles.
     const patients = await medplum.searchResources('Patient', {
       email: email.toLowerCase(),
       _count: '10',
     });
 
-    if (patients.length === 0) {
-      // No patient found - email is available for registration
-      return jsonResponse(200, { exists: false, isDeleted: false });
-    }
+    const isDeleted = patients.some((patient) =>
+      patient.extension?.some((e) => e.url === ACCOUNT_DELETED_EXT)
+    );
 
-    // Check if any patient with this email has the account-deleted extension
-    for (const patient of patients) {
-      const deletedExt = patient.extension?.find((e) => e.url === ACCOUNT_DELETED_EXT);
-      if (deletedExt) {
-        // Found a deleted account with this email
-        return jsonResponse(200, { exists: true, isDeleted: true });
-      }
-    }
-
-    // Patient exists but is not deleted
-    return jsonResponse(200, { exists: true, isDeleted: false });
+    return jsonResponse(200, { isDeleted });
   } catch (err: any) {
     console.error('Error checking email:', err);
-    // On error, return false to allow registration attempt
-    // (Medplum will still block duplicate emails)
-    return jsonResponse(200, { exists: false, isDeleted: false });
+    // On error, allow the registration attempt to proceed
+    // (the registration endpoint still blocks duplicate emails)
+    return jsonResponse(200, { isDeleted: false });
   }
 }

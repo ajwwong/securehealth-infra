@@ -1,5 +1,5 @@
 import { Stack, CfnOutput, Duration } from 'aws-cdk-lib';
-import { HttpApi, HttpMethod, CorsHttpMethod } from 'aws-cdk-lib/aws-apigatewayv2';
+import { HttpApi, HttpMethod, CorsHttpMethod, CfnStage } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { Runtime, Architecture } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -54,6 +54,16 @@ export class DirectoryApiStack extends Stack {
         allowHeaders: ['Content-Type'],
       },
     });
+
+    // Bound request volume at the edge — this is a public, unauthenticated API whose search
+    // endpoint fans out to availability calculations, so unthrottled it multiplies backend cost.
+    // Same posture as the booking API. HttpApi's L2 doesn't expose stage throttling; set it on
+    // the default stage's L1.
+    const defaultStage = api.defaultStage?.node.defaultChild as CfnStage;
+    defaultStage.defaultRouteSettings = {
+      throttlingRateLimit: 10,
+      throttlingBurstLimit: 25,
+    };
 
     // Single integration for all routes
     const integration = new HttpLambdaIntegration('DirectoryIntegration', fn);
