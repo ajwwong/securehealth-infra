@@ -53,7 +53,7 @@ interface ApiGatewayEvent {
   queryStringParameters?: Record<string, string>;
   body?: string;
   requestContext: {
-    http: { method: string; path: string };
+    http: { method: string; path: string; sourceIp?: string };
   };
 }
 
@@ -101,10 +101,10 @@ export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayRespons
       return await handleGetAvailability(slug, event.queryStringParameters || {});
     } else if (method === 'POST' && path.endsWith('/request')) {
       const body = event.body ? JSON.parse(event.body) : {};
-      return await handlePostRequest(slug, body);
+      return await handlePostRequest(slug, body, event.requestContext.http.sourceIp);
     } else if (method === 'POST' && path.endsWith('/contact')) {
       const body = event.body ? JSON.parse(event.body) : {};
-      return await handlePostContact(slug, body);
+      return await handlePostContact(slug, body, event.requestContext.http.sourceIp);
     } else {
       return jsonResponse(404, { error: 'Not found' });
     }
@@ -468,7 +468,7 @@ async function verifyRecaptcha(secretKey: string, token: string): Promise<{ succ
 
 // ─── POST /api/booking/{slug}/request ───────────────────────────────────────
 
-async function handlePostRequest(slug: string, body: any): Promise<ApiGatewayResponse> {
+async function handlePostRequest(slug: string, body: any, sourceIp?: string): Promise<ApiGatewayResponse> {
   if (!body.firstName || !body.lastName || !body.email) {
     return jsonResponse(400, { error: 'Missing required fields: firstName, lastName, email' });
   }
@@ -512,6 +512,7 @@ async function handlePostRequest(slug: string, body: any): Promise<ApiGatewayRes
         requestedStart: body.requestedStart || undefined,
         requestedEnd: body.requestedEnd || undefined,
         scheduleId: body.scheduleId || undefined,
+        locationId: body.locationId || undefined,
         isCouples: body.isCouples || undefined,
         partnerFirstName: body.partnerFirstName || undefined,
         partnerLastName: body.partnerLastName || undefined,
@@ -527,6 +528,7 @@ async function handlePostRequest(slug: string, body: any): Promise<ApiGatewayRes
         guardianPhone: body.guardianPhone || undefined,
         honeypot: body.honeypot || undefined,
         submittedAt: body.submittedAt || undefined,
+        clientIp: sourceIp || undefined,
       },
       'application/json'
     ) as any;
@@ -544,7 +546,7 @@ async function handlePostRequest(slug: string, body: any): Promise<ApiGatewayRes
 
 // ─── POST /api/booking/{slug}/contact ─────────────────────────────────────
 
-async function handlePostContact(slug: string, body: any): Promise<ApiGatewayResponse> {
+async function handlePostContact(slug: string, body: any, sourceIp?: string): Promise<ApiGatewayResponse> {
   if (!body.firstName || !body.lastName || !body.email || !body.message) {
     return jsonResponse(400, { error: 'Missing required fields: firstName, lastName, email, message' });
   }
@@ -577,6 +579,7 @@ async function handlePostContact(slug: string, body: any): Promise<ApiGatewayRes
         message: body.message,
         honeypot: body.honeypot || undefined,
         submittedAt: body.submittedAt || undefined,
+        clientIp: sourceIp || undefined,
       },
       'application/json'
     ) as any;
