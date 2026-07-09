@@ -12,7 +12,10 @@
 
   function mount(el) {
     var slug = el.getAttribute('data-slug');
-    if (!slug) return;
+    // The slug becomes the iframe's hostname label — a value containing '/', '@', '?', '#'
+    // would reshape the URL authority and point the iframe off-domain. Silently no-op on
+    // anything that isn't a plain DNS label.
+    if (!slug || !/^[a-z0-9-]{1,63}$/i.test(slug)) return;
 
     var practitioner = el.getAttribute('data-practitioner');
     var widgetType = el.getAttribute('data-type') || 'booking';
