@@ -46,6 +46,49 @@ function resetClient(): void {
   medplumClient = null;
 }
 
+/**
+ * Fetch ALL matching resources with explicit pagination, up to a hard safety cap.
+ * The old one-shot `_count` fetches silently truncated (and server-order made the kept
+ * subset nondeterministic) once a practice exceeded a page. The hard cap bounds work on
+ * this anonymous public endpoint; hitting it is a data pathology (e.g. the historical
+ * duplicate-schedule pile), so it is logged, never silent.
+ */
+async function searchAllBounded<T>(
+  medplum: MedplumClient,
+  resourceType: string,
+  params: Record<string, string>,
+  hardMax: number
+): Promise<T[]> {
+  const pageSize = 100;
+  const out: T[] = [];
+  for (let offset = 0; out.length < hardMax; offset += pageSize) {
+    const page = (await medplum.searchResources(resourceType as never, {
+      ...params,
+      _count: String(Math.min(pageSize, hardMax - out.length)),
+      _offset: String(offset),
+    })) as unknown as T[];
+    out.push(...page);
+    if (page.length < pageSize) {
+      return out;
+    }
+  }
+  console.warn(`searchAllBounded: ${resourceType} hit hard cap ${hardMax} for ${JSON.stringify(params)} — results truncated`);
+  return out;
+}
+
+/** Run tasks with bounded concurrency (the per-schedule bot fan-out must stay bounded). */
+async function mapChunked<T, R>(items: T[], chunkSize: number, fn: (item: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    results.push(...(await Promise.allSettled(items.slice(i, i + chunkSize).map(fn))));
+  }
+  return results;
+}
+
+const SCHEDULES_HARD_MAX = 100;
+const LOCATIONS_HARD_MAX = 200;
+const BOT_FANOUT_CONCURRENCY = 10;
+
 interface ApiGatewayEvent {
   routeKey: string;
   rawPath: string;
@@ -172,20 +215,18 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
 
   // Fetch locations, services, and schedules in parallel
   const [locations, servicesResult, schedules] = await Promise.all([
-    medplum.searchResources('Location', {
+    searchAllBounded<any>(medplum, 'Location', {
       organization: `Organization/${organizationId}`,
-      _count: '50',
-    }),
+    }, LOCATIONS_HARD_MAX),
     medplum.executeBot(
       { system: 'https://progressnotes.app', value: 'billing-settings' },
       { action: 'getServices', organizationId },
       'application/json'
     ),
-    medplum.searchResources('Schedule', {
+    searchAllBounded<any>(medplum, 'Schedule', {
       _compartment: `Organization/${organizationId}`,
       active: 'true',
-      _count: '10',
-    }),
+    }, SCHEDULES_HARD_MAX),
   ]);
 
   // Filter locations to public ones
@@ -213,45 +254,50 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
       price: s.rate,
     }));
 
-  // Extract practitioner info from schedules (include scheduleId for filtering)
+  // Extract practitioner info from schedules (include scheduleId for filtering).
+  // Reads are deduped by practitioner and chunk-parallelized — the schedule cap is now 100,
+  // and the old sequential loop would serialize that many reads.
   const practitionerIds = new Set<string>();
-  const practitioners: Array<{ id: string; name: string; credentials?: string; scheduleId: string }> = [];
-
+  const practToSchedule: Array<{ practId: string; scheduleId: string }> = [];
   for (const schedule of schedules) {
     for (const actor of schedule.actor || []) {
       if (actor.reference?.startsWith('Practitioner/')) {
         const practId = actor.reference.replace('Practitioner/', '');
         if (!practitionerIds.has(practId)) {
           practitionerIds.add(practId);
-          try {
-            const pract = await medplum.readResource('Practitioner', practId);
-            const name = pract.name?.[0];
-            const displayName = name
-              ? `${name.prefix?.join(' ') || ''} ${name.given?.join(' ') || ''} ${name.family || ''}`.trim()
-              : 'Provider';
-            const credentials = pract.qualification
-              ?.map((q) => q.code?.text || q.code?.coding?.[0]?.display)
-              .filter(Boolean)
-              .join(', ');
-            // Check per-practitioner accepting status (default true if not set)
-            const practAccepting = pract.extension?.find(
-              (e: any) => e.url === ALLOW_NEW_CLIENTS_EXT
-            )?.valueBoolean ?? true;
-
-            practitioners.push({
-              id: practId,
-              name: displayName,
-              credentials: credentials || undefined,
-              scheduleId: schedule.id!,
-              acceptingNewClients: practAccepting,
-            });
-          } catch {
-            // Skip practitioners we can't read
-          }
+          practToSchedule.push({ practId, scheduleId: schedule.id! });
         }
       }
     }
   }
+
+  const practResults = await mapChunked(practToSchedule, BOT_FANOUT_CONCURRENCY, async ({ practId, scheduleId }) => {
+    const pract = await medplum.readResource('Practitioner', practId);
+    const name = pract.name?.[0];
+    const displayName = name
+      ? `${name.prefix?.join(' ') || ''} ${name.given?.join(' ') || ''} ${name.family || ''}`.trim()
+      : 'Provider';
+    const credentials = pract.qualification
+      ?.map((q) => q.code?.text || q.code?.coding?.[0]?.display)
+      .filter(Boolean)
+      .join(', ');
+    // Check per-practitioner accepting status (default true if not set)
+    const practAccepting = pract.extension?.find(
+      (e: any) => e.url === ALLOW_NEW_CLIENTS_EXT
+    )?.valueBoolean ?? true;
+
+    return {
+      id: practId,
+      name: displayName,
+      credentials: credentials || undefined,
+      scheduleId,
+      acceptingNewClients: practAccepting,
+    };
+  });
+  // Skip practitioners we can't read (same tolerance as the old per-read try/catch)
+  const practitioners = practResults
+    .filter((r): r is PromiseFulfilledResult<{ id: string; name: string; credentials?: string; scheduleId: string; acceptingNewClients: boolean }> => r.status === 'fulfilled')
+    .map((r) => r.value);
 
   // Practice info
   const phone = org.telecom?.find((t) => t.system === 'phone')?.value;
@@ -339,11 +385,10 @@ async function handleGetAvailability(
       schedules = [];
     }
   } else {
-    schedules = await medplum.searchResources('Schedule', {
+    schedules = await searchAllBounded<any>(medplum, 'Schedule', {
       _compartment: `Organization/${organizationId}`,
       active: 'true',
-      _count: '10',
-    });
+    }, SCHEDULES_HARD_MAX);
   }
 
   if (schedules.length === 0) {
@@ -354,20 +399,20 @@ async function handleGetAvailability(
   const allSlots: Array<{ start: string; end: string; scheduleId: string }> = [];
   let timezone = 'America/Los_Angeles';
 
-  const results = await Promise.allSettled(
-    schedules.map((schedule) =>
-      medplum.executeBot(
-        { system: 'https://progressnotes.app', value: 'calculate-availability' },
-        {
-          scheduleId: schedule.id,
-          startDate: `${date}T00:00:00`,
-          endDate: `${date}T23:59:59`,
-          serviceType: serviceCode || undefined,
-          organizationId,
-        },
-        'application/json'
-      ).then((result: any) => ({ result, scheduleId: schedule.id! }))
-    )
+  // Bounded fan-out: one bot execution per schedule on an anonymous endpoint — the old
+  // _count:10 cap bounded this by accident; the concurrency chunk does it on purpose.
+  const results = await mapChunked(schedules, BOT_FANOUT_CONCURRENCY, (schedule: any) =>
+    medplum.executeBot(
+      { system: 'https://progressnotes.app', value: 'calculate-availability' },
+      {
+        scheduleId: schedule.id,
+        startDate: `${date}T00:00:00`,
+        endDate: `${date}T23:59:59`,
+        serviceType: serviceCode || undefined,
+        organizationId,
+      },
+      'application/json'
+    ).then((result: any) => ({ result, scheduleId: schedule.id! }))
   );
 
   for (const entry of results) {
@@ -435,11 +480,10 @@ async function handleGetAvailabilityDates(
       schedules = [];
     }
   } else {
-    schedules = await medplum.searchResources('Schedule', {
+    schedules = await searchAllBounded<any>(medplum, 'Schedule', {
       _compartment: `Organization/${organizationId}`,
       active: 'true',
-      _count: '10',
-    });
+    }, SCHEDULES_HARD_MAX);
   }
 
   if (schedules.length === 0) {
@@ -450,20 +494,19 @@ async function handleGetAvailabilityDates(
   const allDates = new Set<string>();
   let timezone = 'America/Los_Angeles';
 
-  const results = await Promise.allSettled(
-    schedules.map((schedule) =>
-      medplum.executeBot(
-        { system: 'https://progressnotes.app', value: 'calculate-availability' },
-        {
-          scheduleId: schedule.id,
-          startDate: `${startDate}T00:00:00`,
-          endDate: `${endDate}T23:59:59`,
-          serviceType: serviceCode || undefined,
-          organizationId,
-          datesOnly: true,
-        },
-        'application/json'
-      )
+  // Bounded fan-out (see /availability).
+  const results = await mapChunked(schedules, BOT_FANOUT_CONCURRENCY, (schedule: any) =>
+    medplum.executeBot(
+      { system: 'https://progressnotes.app', value: 'calculate-availability' },
+      {
+        scheduleId: schedule.id,
+        startDate: `${startDate}T00:00:00`,
+        endDate: `${endDate}T23:59:59`,
+        serviceType: serviceCode || undefined,
+        organizationId,
+        datesOnly: true,
+      },
+      'application/json'
     )
   );
 
