@@ -21,7 +21,10 @@
     var widgetType = el.getAttribute('data-type') || 'booking';
     var defaultText = widgetType === 'contact' ? 'Contact Us' : 'Request Appointment';
     var buttonText = el.getAttribute('data-button-text') || defaultText;
+    // The color is concatenated into cssText — accept only a hex value or a bare color
+    // keyword so a stray ';' or 'url(' in the attribute can't smuggle extra declarations.
     var buttonColor = el.getAttribute('data-button-color') || '#228be6';
+    if (!/^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,30})$/.test(buttonColor)) buttonColor = '#228be6';
 
     var btn = document.createElement('button');
     btn.textContent = buttonText;
@@ -49,8 +52,14 @@
   function openOverlay(slug, practitioner, widgetType, targetEl) {
     if (document.getElementById(OVERLAY_ID)) return;
 
+    var dialogLabel = widgetType === 'contact' ? 'Contact form' : 'Appointment request form';
+    var previousFocus = document.activeElement;
+
     var overlay = document.createElement('div');
     overlay.id = OVERLAY_ID;
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', dialogLabel);
     overlay.style.cssText =
       'position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;' +
       'background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;' +
@@ -65,6 +74,7 @@
 
     var iframe = document.createElement('iframe');
     iframe.src = buildSrc(slug, practitioner, widgetType);
+    iframe.setAttribute('title', dialogLabel);
     iframe.style.cssText =
       'border:none;background:#fff;width:100%;height:100%;' +
       'border-radius:0;max-width:none;max-height:none;';
@@ -89,6 +99,8 @@
       });
     });
 
+    closeBtn.focus();
+
     function close() {
       removeOverlay();
     }
@@ -105,9 +117,29 @@
     });
 
     function onKey(e) {
-      if (e.key === 'Escape') close();
+      if (e.key === 'Escape') {
+        close();
+        return;
+      }
+      // Focus trap, backward edge: the close button is the first (and only) focusable
+      // element in the overlay before the iframe, so Shift+Tab from it must wrap to the
+      // iframe instead of escaping into the page behind the dialog. (Keydowns inside the
+      // iframe never reach this document — the forward edge is handled by onFocusIn.)
+      if (e.key === 'Tab' && e.shiftKey && document.activeElement === closeBtn) {
+        e.preventDefault();
+        iframe.focus();
+      }
     }
     document.addEventListener('keydown', onKey);
+
+    // Focus trap, forward edge: tabbing past the end of the iframe's content (or any other
+    // way focus lands on the page behind the dialog) pulls focus back into the overlay.
+    function onFocusIn(e) {
+      if (e.target && e.target.nodeType === 1 && !overlay.contains(e.target)) {
+        closeBtn.focus();
+      }
+    }
+    document.addEventListener('focusin', onFocusIn);
 
     function onMessage(e) {
       if (!e.origin || !e.origin.match(/\.securehealth\.me$/)) return;
@@ -121,7 +153,11 @@
     // Store cleanup refs on overlay
     overlay._pnCleanup = function () {
       document.removeEventListener('keydown', onKey);
+      document.removeEventListener('focusin', onFocusIn);
       window.removeEventListener('message', onMessage);
+      if (previousFocus && previousFocus.focus && document.contains(previousFocus)) {
+        previousFocus.focus();
+      }
     };
   }
 
