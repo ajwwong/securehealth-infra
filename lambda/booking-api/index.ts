@@ -146,10 +146,26 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
     return jsonResponse(404, { error: 'Practice not found' });
   }
 
-  // Check if accepting new clients
-  const allowNewClients = org.extension?.find((e) => e.url === ALLOW_NEW_CLIENTS_EXT);
-  if (!allowNewClients?.valueBoolean) {
-    return jsonResponse(404, { error: 'This practice is not accepting new client requests' });
+  // Accepting-new-clients no longer 404s the endpoint: the CONTACT embed needs the practice's
+  // identity (name/logo/phone) even when booking is paused (widgets audit L5, owner decision
+  // 2026-07-10). Booking stays enforced twice over: the flag gates the wizard client-side, and
+  // the new-client-request-handler bot independently refuses booking submits when it is off.
+  // A paused practice returns a slim payload — no service/practitioner roster, no extra fetches.
+  const acceptingNewClients =
+    org.extension?.find((e) => e.url === ALLOW_NEW_CLIENTS_EXT)?.valueBoolean === true;
+  if (!acceptingNewClients) {
+    const pausedLogoExt = org.extension?.find((e) => e.url === PRACTICE_LOGO_BINARY_ID_EXT);
+    return jsonResponse(200, {
+      practiceName: org.name,
+      phone: org.telecom?.find((t) => t.system === 'phone')?.value,
+      logoUrl: pausedLogoExt?.valueString
+        ? `${process.env.MEDPLUM_BASE_URL}/fhir/R4/Binary/${pausedLogoExt.valueString}`
+        : undefined,
+      acceptingNewClients: false,
+      locations: [],
+      services: [],
+      practitioners: [],
+    });
   }
 
   const organizationId = org.id!;
@@ -280,6 +296,7 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
     timezone,
     allowCouples,
     prescreener,
+    acceptingNewClients: true,
     locations: publicLocations,
     services,
     practitioners: acceptingPractitioners,
