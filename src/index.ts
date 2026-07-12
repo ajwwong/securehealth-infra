@@ -16,6 +16,16 @@ function main(): void {
 
   const config = JSON.parse(readFileSync(resolve(configFileName), 'utf-8'));
 
+  // Stack names are `${config.name}-...`, so an entrypoint config must carry a name.
+  // The credential files (config/booking.json, config/widget.json) have no name and are read
+  // implicitly below — the deploy entrypoint is `-c config=config/dev.json`.
+  if (!config.name) {
+    throw new Error(
+      `Config file "${configFileName}" has no "name" field and cannot be a deploy entrypoint. ` +
+        'Use: cdk deploy -c config=config/dev.json'
+    );
+  }
+
   if (config.sslCertArn) {
     new StaticSiteStack(app, `${config.name}-StaticSite`, config);
   }
