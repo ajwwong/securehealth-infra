@@ -19,7 +19,12 @@ const ALLOW_NEW_CLIENTS_EXT = `${BASE_EXT}/allow-new-clients`;
 const ALLOW_NEW_COUPLES_EXT = `${BASE_EXT}/allow-new-couples`;
 const LOCATION_DISPLAY_PUBLICLY_EXT = `${BASE_EXT}/location-display-publicly`;
 const PRACTICE_LOGO_BINARY_ID_EXT = `${BASE_EXT}/practice-logo-binary-id`;
-const TIMEZONE_EXT = `${BASE_EXT}/timezone`;
+// Org timezones are stored at the HL7 URL (as valueCode) by registration + the 2026-06-30
+// migration; the progressnotes URL is legacy. Reading only the legacy URL/valueString left
+// `timezone` undefined for EVERY practice, so the public booking page fell back to Pacific
+// display (live report 2026-07-18: Central practice's 5 PM slots rendered as 3 PM).
+const TIMEZONE_EXT_HL7 = 'http://hl7.org/fhir/StructureDefinition/timezone';
+const TIMEZONE_EXT_LEGACY = `${BASE_EXT}/timezone`;
 const PRESCREENER_QUESTIONS_EXT = `${BASE_EXT}/booking-prescreener-questions`;
 
 // Reuse MedplumClient across warm Lambda invocations
@@ -302,7 +307,10 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
   // Practice info
   const phone = org.telecom?.find((t) => t.system === 'phone')?.value;
   const logoExt = org.extension?.find((e) => e.url === PRACTICE_LOGO_BINARY_ID_EXT);
-  const timezone = org.extension?.find((e) => e.url === TIMEZONE_EXT)?.valueString;
+  const tzExt =
+    org.extension?.find((e) => e.url === TIMEZONE_EXT_HL7) ||
+    org.extension?.find((e) => e.url === TIMEZONE_EXT_LEGACY);
+  const timezone = tzExt?.valueCode || tzExt?.valueString;
   const allowCouples = org.extension?.find((e) => e.url === ALLOW_NEW_COUPLES_EXT)?.valueBoolean === true;
 
   // Parse prescreener questions from Organization extension (stored as JSON string)
