@@ -25,6 +25,15 @@ const PRACTICE_LOGO_BINARY_ID_EXT = `${BASE_EXT}/practice-logo-binary-id`;
 // display (live report 2026-07-18: Central practice's 5 PM slots rendered as 3 PM).
 const TIMEZONE_EXT_HL7 = 'http://hl7.org/fhir/StructureDefinition/timezone';
 const TIMEZONE_EXT_LEGACY = `${BASE_EXT}/timezone`;
+
+function readOrgTimezone(org: {
+  extension?: Array<{ url?: string; valueCode?: string; valueString?: string }>;
+}): string | undefined {
+  const tzExt =
+    org.extension?.find((e) => e.url === TIMEZONE_EXT_HL7) ||
+    org.extension?.find((e) => e.url === TIMEZONE_EXT_LEGACY);
+  return tzExt?.valueCode || tzExt?.valueString;
+}
 const PRESCREENER_QUESTIONS_EXT = `${BASE_EXT}/booking-prescreener-questions`;
 
 // Reuse MedplumClient across warm Lambda invocations
@@ -307,10 +316,7 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
   // Practice info
   const phone = org.telecom?.find((t) => t.system === 'phone')?.value;
   const logoExt = org.extension?.find((e) => e.url === PRACTICE_LOGO_BINARY_ID_EXT);
-  const tzExt =
-    org.extension?.find((e) => e.url === TIMEZONE_EXT_HL7) ||
-    org.extension?.find((e) => e.url === TIMEZONE_EXT_LEGACY);
-  const timezone = tzExt?.valueCode || tzExt?.valueString;
+  const timezone = readOrgTimezone(org);
   const allowCouples = org.extension?.find((e) => e.url === ALLOW_NEW_COUPLES_EXT)?.valueBoolean === true;
 
   // Parse prescreener questions from Organization extension (stored as JSON string)
@@ -400,12 +406,14 @@ async function handleGetAvailability(
   }
 
   if (schedules.length === 0) {
-    return jsonResponse(200, { timezone: 'America/Los_Angeles', slots: [] });
+    return jsonResponse(200, { timezone: readOrgTimezone(org) || 'America/Los_Angeles', slots: [] });
   }
 
   // Get availability for each schedule and merge slots (parallel)
   const allSlots: Array<{ start: string; end: string; scheduleId: string }> = [];
-  let timezone = 'America/Los_Angeles';
+  // Org timezone as the fallback — the bot result normally overwrites it; if the bot response
+  // ever drops its timezone field, we must not silently re-default a non-Pacific practice.
+  let timezone = readOrgTimezone(org) || 'America/Los_Angeles';
 
   // Bounded fan-out: one bot execution per schedule on an anonymous endpoint — the old
   // _count:10 cap bounded this by accident; the concurrency chunk does it on purpose.
@@ -495,12 +503,13 @@ async function handleGetAvailabilityDates(
   }
 
   if (schedules.length === 0) {
-    return jsonResponse(200, { dates: [], timezone: 'America/Los_Angeles' });
+    return jsonResponse(200, { dates: [], timezone: readOrgTimezone(org) || 'America/Los_Angeles' });
   }
 
   // Collect available dates across all schedules (parallel)
   const allDates = new Set<string>();
-  let timezone = 'America/Los_Angeles';
+  // Same org-timezone fallback as /availability.
+  let timezone = readOrgTimezone(org) || 'America/Los_Angeles';
 
   // Bounded fan-out (see /availability).
   const results = await mapChunked(schedules, BOT_FANOUT_CONCURRENCY, (schedule: any) =>

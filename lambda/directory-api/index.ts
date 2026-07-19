@@ -193,7 +193,11 @@ function transformPractitioner(
     id: practitioner.id!,
     name: displayName,
     credentials,
-    photo: getExtensionValue(practitioner, PRACTITIONER_PHOTO_EXT) || null,
+    // practitioner-photo-url is documented as valueUrl (fhirExtensions.ts); accept valueString too
+    photo:
+      practitioner.extension?.find((e) => e.url === PRACTITIONER_PHOTO_EXT)?.valueUrl ||
+      getExtensionValue(practitioner, PRACTITIONER_PHOTO_EXT) ||
+      null,
     bio: getExtensionValue(practitioner, PRACTITIONER_BIO_EXT) || '',
     specialties: specialtiesStr.split(',').map((s) => s.trim()).filter(Boolean),
     insurances: insurancesStr.split(',').map((s) => s.trim()).filter(Boolean),
