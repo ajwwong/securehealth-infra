@@ -96,12 +96,6 @@ export class DirectoryApiStack extends Stack {
     });
 
     // Submit booking request
-    api.addRoutes({
-      path: '/api/directory/booking-request',
-      methods: [HttpMethod.POST],
-      integration,
-    });
-
     // Cora: Check email deletion status
     api.addRoutes({
       path: '/api/cora/check-email',

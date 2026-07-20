@@ -130,11 +130,6 @@ export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayRespons
     }
 
     // POST /api/directory/booking-request
-    if (method === 'POST' && path === '/api/directory/booking-request') {
-      const body = event.body ? JSON.parse(event.body) : {};
-      return await handleBookingRequest(body);
-    }
-
     // POST /api/cora/check-email - Check if email is associated with a deleted Cora account
     if (method === 'POST' && path === '/api/cora/check-email') {
       const body = event.body ? JSON.parse(event.body) : {};
@@ -224,6 +219,14 @@ async function handleGetPhoto(practitionerId: string): Promise<ApiGatewayRespons
     const pract = await medplum.readResource('Practitioner', practitionerId);
     if (!getExtensionBoolean(pract, DIRECTORY_LISTED_EXT)) {
       return jsonResponse(404, { error: 'Not found' });
+    }
+    // Org toggle too: unlisting the practice (rollback) must stop photo serving as well.
+    const orgRef = pract.meta?.account?.reference || '';
+    if (orgRef.startsWith('Organization/')) {
+      const photoOrg = await medplum.readResource('Organization', orgRef.replace('Organization/', ''));
+      if (!getExtensionBoolean(photoOrg, DIRECTORY_LISTED_EXT)) {
+        return jsonResponse(404, { error: 'Not found' });
+      }
     }
     const photoExt = pract.extension?.find((e: any) => e.url === PRACTITIONER_PHOTO_EXT);
     const stored = (photoExt as any)?.valueUrl || (photoExt as any)?.valueString || '';
@@ -326,7 +329,7 @@ function transformPractitioner(
 // ─── GET /api/directory/practitioners ────────────────────────────────────────
 
 async function handleSearchPractitioners(params: Record<string, string>, apiDomain?: string): Promise<ApiGatewayResponse> {
-  const { state, specialty, insurance, modality, gender, page = '1', limit = '20' } = params;
+  const { state, specialty, insurance, modality, gender, language, page = '1', limit = '20' } = params;
   const pageNum = parseInt(page, 10) || 1;
   const limitNum = Math.min(parseInt(limit, 10) || 20, 50);
   const offset = (pageNum - 1) * limitNum;
@@ -409,6 +412,15 @@ async function handleSearchPractitioners(params: Record<string, string>, apiDoma
           (i) => i.toLowerCase().includes(insurance.toLowerCase())
         );
         if (!hasInsurance) continue;
+      }
+
+      if (language) {
+        // Values are display names (filter options emit what transformPractitioner emits) —
+        // a code like 'es' would silently match nothing (the weekend's no-op-filter class).
+        const hasLanguage = transformed.languages.some(
+          (l) => l.toLowerCase().includes(language.toLowerCase())
+        );
+        if (!hasLanguage) continue;
       }
 
       if (modality && modality !== 'both') {
@@ -507,8 +519,12 @@ async function getNextAvailableSlots(
 async function handleGetPractitioner(id: string, apiDomain?: string): Promise<ApiGatewayResponse> {
   const medplum = await getMedplum();
 
-  const practitioner = await medplum.readResource('Practitioner', id);
-  if (!practitioner) {
+  let practitioner: Practitioner;
+  try {
+    practitioner = await medplum.readResource('Practitioner', id);
+  } catch {
+    // readResource THROWS on missing/invalid ids — without this catch a nonexistent id
+    // surfaced as a 500 (crawlers retry 500s; a gone profile should 404).
     return jsonResponse(404, { error: 'Practitioner not found' });
   }
 
@@ -626,60 +642,16 @@ async function handleGetFilters(): Promise<ApiGatewayResponse> {
     { value: 'selfpay', label: 'Self-pay' },
   ];
 
+  // Values are DISPLAY NAMES, matching what transformPractitioner emits from
+  // Practitioner.communication — ISO codes here silently matched nothing.
   const languages = [
-    { value: 'en', label: 'English' },
-    { value: 'es', label: 'Spanish' },
-    { value: 'zh', label: 'Chinese' },
-    { value: 'vi', label: 'Vietnamese' },
-    { value: 'ko', label: 'Korean' },
-    { value: 'tl', label: 'Tagalog' },
-  ];
+    'English', 'Spanish', 'Mandarin', 'Cantonese', 'Hindi', 'French', 'German',
+    'Portuguese', 'Russian', 'Japanese', 'Korean', 'Vietnamese', 'Tagalog', 'Arabic',
+  ].map((l) => ({ value: l, label: l }));
 
   return jsonResponse(200, { states, specialties, insurances, languages });
 }
 
-// ─── POST /api/directory/booking-request ─────────────────────────────────────
-
-async function handleBookingRequest(body: any): Promise<ApiGatewayResponse> {
-  const { practitionerId, slot, firstName, lastName, email, phone, modality } = body;
-
-  if (!practitionerId || !slot || !firstName || !lastName || !email) {
-    return jsonResponse(400, { error: 'Missing required fields' });
-  }
-
-  const medplum = await getMedplum();
-
-  // Get practitioner to find organization
-  const practitioner = await medplum.readResource('Practitioner', practitionerId);
-  const compartment = practitioner.meta?.account?.reference;
-  if (!compartment) {
-    return jsonResponse(400, { error: 'Invalid practitioner' });
-  }
-
-  const orgId = compartment.replace('Organization/', '');
-  const org = await medplum.readResource('Organization', orgId);
-  const portalSlug = org.identifier?.find((i) => i.system === PORTAL_SLUG_SYSTEM)?.value;
-
-  if (!portalSlug) {
-    return jsonResponse(400, { error: 'Practice not configured for booking' });
-  }
-
-  // Build redirect URL to SecureHealth booking page
-  const params = new URLSearchParams({
-    scheduleId: slot.scheduleId,
-    start: slot.start,
-    end: slot.end,
-    firstName,
-    lastName,
-    email,
-    phone: phone || '',
-    source: 'findtherapist',
-  });
-
-  const redirectUrl = `https://${portalSlug}.securehealth.me/book?${params.toString()}`;
-
-  return jsonResponse(200, { redirectUrl });
-}
 
 // ─── POST /api/cora/check-email ──────────────────────────────────────────────
 
