@@ -16,8 +16,19 @@ import { MedplumClient, Practitioner, Organization, Schedule } from '@medplum/co
 
 /** Per-location custom-hours schedules (Location actor) are native-scheduling-only —
  * legacy availability must never read them (step-4 coexistence guard). */
-function excludeLocationSchedules<T extends { actor?: { reference?: string }[] }>(schedules: T[]): T[] {
-  return schedules.filter((s) => !(s.actor || []).some((a) => a.reference?.startsWith('Location/')));
+function excludeLocationSchedules<
+  T extends {
+    actor?: { reference?: string }[];
+    identifier?: { system?: string }[];
+    extension?: { url?: string }[];
+  },
+>(schedules: T[]): T[] {
+  return schedules.filter(
+    (s) =>
+      !(s.identifier || []).some((i) => i.system === 'https://progressnotes.app/fhir/location-schedule') &&
+      !(s.extension || []).some((e) => e.url === 'https://progressnotes.app/fhir/StructureDefinition/schedule-location') &&
+      !(s.actor || []).some((a) => a.reference?.startsWith('Location/'))
+  );
 }
 
 
