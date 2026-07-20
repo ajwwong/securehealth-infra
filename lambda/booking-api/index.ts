@@ -110,6 +110,7 @@ interface ApiGatewayEvent {
   queryStringParameters?: Record<string, string>;
   body?: string;
   requestContext: {
+    domainName?: string;
     http: { method: string; path: string; sourceIp?: string };
   };
 }
@@ -118,6 +119,7 @@ interface ApiGatewayResponse {
   statusCode: number;
   headers: Record<string, string>;
   body: string;
+  isBase64Encoded?: boolean;
 }
 
 const CORS_HEADERS = {
@@ -184,8 +186,10 @@ export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayRespons
   const method = event.requestContext.http.method;
 
   try {
-    if (method === 'GET' && path.endsWith('/practice')) {
-      return await handleGetPractice(slug);
+    if (method === 'GET' && path.endsWith('/logo')) {
+      return await handleGetLogo(slug);
+    } else if (method === 'GET' && path.endsWith('/practice')) {
+      return await handleGetPractice(slug, event.requestContext.domainName);
     } else if (method === 'GET' && path.endsWith('/availability-dates')) {
       return await handleGetAvailabilityDates(slug, event.queryStringParameters || {});
     } else if (method === 'GET' && path.endsWith('/availability')) {
@@ -209,9 +213,51 @@ export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayRespons
   }
 }
 
+// ─── GET /api/booking/{slug}/logo ───────────────────────────────────────────
+// Public logo proxy, keyed by SLUG (never raw Binary ids). Direct Medplum Binary URLs
+// require auth — logos on the public booking page were silently 401-broken until 2026-07-20.
+async function handleGetLogo(slug: string): Promise<ApiGatewayResponse> {
+  const medplum = await getMedplum();
+  const org = await medplum.searchOne('Organization', {
+    identifier: `${PORTAL_SLUG_SYSTEM}|${slug}`,
+  });
+  const binaryId = org?.extension?.find((e) => e.url === PRACTICE_LOGO_BINARY_ID_EXT)?.valueString;
+  if (!binaryId) {
+    return jsonResponse(404, { error: 'No logo' });
+  }
+  try {
+    const token = await medplum.getAccessToken();
+    const resp = await fetch(
+      `${process.env.MEDPLUM_BASE_URL!.replace(/\/$/, '')}/fhir/R4/Binary/${binaryId}`,
+      { headers: { Authorization: `Bearer ${token}`, Accept: 'image/*' } }
+    );
+    if (!resp.ok) {
+      console.error(`Image proxy upstream ${resp.status} for Binary ${binaryId} (token ${token ? 'present' : 'MISSING'})`);
+      return jsonResponse(404, { error: 'Not found' });
+    }
+    const buf = Buffer.from(await resp.arrayBuffer());
+    const contentType = resp.headers.get('content-type') || 'image/jpeg';
+    return {
+      statusCode: 200,
+      headers: {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=3600',
+        'Access-Control-Allow-Origin': '*',
+      },
+      body: buf.toString('base64'),
+      isBase64Encoded: true,
+    };
+  } catch (err) {
+    console.error('Logo proxy error:', err);
+    return jsonResponse(404, { error: 'No logo' });
+  }
+}
+
 // ─── GET /api/booking/{slug}/practice ───────────────────────────────────────
 
-async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
+async function handleGetPractice(slug: string, apiDomain?: string): Promise<ApiGatewayResponse> {
+  const logoProxy = (has: boolean): string | undefined =>
+    has ? `${apiDomain ? `https://${apiDomain}` : ''}/api/booking/${slug}/logo` : undefined;
   const medplum = await getMedplum();
 
   // Find organization by slug
@@ -235,9 +281,7 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
     return jsonResponse(200, {
       practiceName: org.name,
       phone: org.telecom?.find((t) => t.system === 'phone')?.value,
-      logoUrl: pausedLogoExt?.valueString
-        ? `${process.env.MEDPLUM_BASE_URL}/fhir/R4/Binary/${pausedLogoExt.valueString}`
-        : undefined,
+      logoUrl: logoProxy(!!pausedLogoExt?.valueString),
       acceptingNewClients: false,
       locations: [],
       services: [],
@@ -388,9 +432,7 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
   return jsonResponse(200, {
     practiceName: org.name,
     phone,
-    logoUrl: logoExt?.valueString
-      ? `${process.env.MEDPLUM_BASE_URL}/fhir/R4/Binary/${logoExt.valueString}`
-      : undefined,
+    logoUrl: logoProxy(!!logoExt?.valueString),
     timezone,
     allowCouples,
     prescreener,

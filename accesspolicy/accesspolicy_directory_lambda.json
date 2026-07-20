@@ -1,0 +1,52 @@
+{
+  "resourceType": "AccessPolicy",
+  "name": "Directory API Lambda - Public Read + Bot Execute",
+  "resource": [
+    {
+      "resourceType": "Organization",
+      "readonly": true
+    },
+    {
+      "resourceType": "Practitioner",
+      "readonly": true
+    },
+    {
+      "resourceType": "Schedule",
+      "readonly": true
+    },
+    {
+      "resourceType": "Patient",
+      "readonly": true
+    },
+    {
+      "resourceType": "Bot",
+      "readonly": true
+    },
+    {
+      "resourceType": "OperationOutcome"
+    },
+    {
+      "resourceType": "Binary",
+      "readonly": true
+    },
+    {
+      "resourceType": "Location",
+      "readonly": true
+    }
+  ],
+  "id": "c01effb6-62aa-425f-806a-f7f06f5e205a",
+  "meta": {
+    "versionId": "34c65ede-6079-416e-a3aa-1457b94a8eac",
+    "lastUpdated": "2026-07-06T07:52:40.264Z",
+    "author": {
+      "reference": "ClientApplication/01952524-35f9-70cb-a75f-cea299fe9ce8",
+      "display": "Multi-tenant Client Application for Organization and Practitioner Creation"
+    },
+    "project": "bd5c50fc-d625-49a8-8aea-17f7e8b59c76",
+    "compartment": [
+      {
+        "reference": "Project/bd5c50fc-d625-49a8-8aea-17f7e8b59c76"
+      }
+    ]
+  }
+}

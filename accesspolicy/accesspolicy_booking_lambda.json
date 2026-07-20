@@ -1,0 +1,62 @@
+{
+  "resourceType": "AccessPolicy",
+  "name": "Booking API Lambda - Public Read + Bot Execute",
+  "resource": [
+    {
+      "resourceType": "Organization",
+      "readonly": true
+    },
+    {
+      "resourceType": "Location",
+      "readonly": true
+    },
+    {
+      "resourceType": "Schedule",
+      "readonly": true
+    },
+    {
+      "resourceType": "Slot",
+      "readonly": true
+    },
+    {
+      "resourceType": "Practitioner",
+      "readonly": true
+    },
+    {
+      "resourceType": "ActivityDefinition",
+      "readonly": true
+    },
+    {
+      "resourceType": "ChargeItemDefinition",
+      "readonly": true
+    },
+    {
+      "resourceType": "Bot"
+    },
+    {
+      "resourceType": "ServiceRequest"
+    },
+    {
+      "resourceType": "OperationOutcome"
+    },
+    {
+      "resourceType": "Binary",
+      "readonly": true
+    }
+  ],
+  "id": "3df8a69b-4ebc-4084-8aac-63f9e7bafc15",
+  "meta": {
+    "versionId": "b9358f50-3f1e-4a35-bf16-4ea8bf519853",
+    "lastUpdated": "2026-02-13T05:25:42.108Z",
+    "author": {
+      "reference": "ClientApplication/01952524-35f9-70cb-a75f-cea299fe9ce8",
+      "display": "Multi-tenant Client Application for Organization and Practitioner Creation"
+    },
+    "project": "bd5c50fc-d625-49a8-8aea-17f7e8b59c76",
+    "compartment": [
+      {
+        "reference": "Project/bd5c50fc-d625-49a8-8aea-17f7e8b59c76"
+      }
+    ]
+  }
+}

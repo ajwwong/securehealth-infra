@@ -89,6 +89,12 @@ export class DirectoryApiStack extends Stack {
       integration,
     });
 
+    api.addRoutes({
+      path: '/api/directory/photo/{id}',
+      methods: [HttpMethod.GET],
+      integration,
+    });
+
     // Submit booking request
     api.addRoutes({
       path: '/api/directory/booking-request',

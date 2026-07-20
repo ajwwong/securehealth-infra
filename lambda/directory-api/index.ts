@@ -71,6 +71,7 @@ interface ApiGatewayEvent {
   queryStringParameters?: Record<string, string>;
   body?: string;
   requestContext: {
+    domainName?: string;
     http: { method: string; path: string };
   };
 }
@@ -79,6 +80,7 @@ interface ApiGatewayResponse {
   statusCode: number;
   headers: Record<string, string>;
   body: string;
+  isBase64Encoded?: boolean;
 }
 
 const CORS_HEADERS = {
@@ -108,13 +110,18 @@ export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayRespons
   try {
     // GET /api/directory/practitioners
     if (method === 'GET' && path === '/api/directory/practitioners') {
-      return await handleSearchPractitioners(event.queryStringParameters || {});
+      return await handleSearchPractitioners(event.queryStringParameters || {}, event.requestContext.domainName);
     }
 
     // GET /api/directory/practitioners/:id
     if (method === 'GET' && path.match(/^\/api\/directory\/practitioners\/[\w-]+$/)) {
       const id = event.pathParameters?.id || path.split('/').pop()!;
-      return await handleGetPractitioner(id);
+      return await handleGetPractitioner(id, event.requestContext.domainName);
+    }
+
+    // GET /api/directory/photo/:practitionerId (public image proxy)
+    if (method === 'GET' && path.match(/^\/api\/directory\/photo\/[\w-]+$/)) {
+      return await handleGetPhoto(path.split('/').pop()!);
     }
 
     // GET /api/directory/filters
@@ -205,11 +212,68 @@ async function resolveOrgModalities(
   }
 }
 
+/** Public photo proxy, keyed by PRACTITIONER id (never raw Binary ids — an unauthenticated
+ *  route must not be able to fetch arbitrary stored files). Serves only the photo of a
+ *  directory-listed practitioner. */
+async function handleGetPhoto(practitionerId: string): Promise<ApiGatewayResponse> {
+  if (!/^[\w-]{10,64}$/.test(practitionerId)) {
+    return jsonResponse(400, { error: 'Invalid id' });
+  }
+  const medplum = await getMedplum();
+  try {
+    const pract = await medplum.readResource('Practitioner', practitionerId);
+    if (!getExtensionBoolean(pract, DIRECTORY_LISTED_EXT)) {
+      return jsonResponse(404, { error: 'Not found' });
+    }
+    const photoExt = pract.extension?.find((e: any) => e.url === PRACTITIONER_PHOTO_EXT);
+    const stored = (photoExt as any)?.valueUrl || (photoExt as any)?.valueString || '';
+    const binaryId = stored.match(/Binary\/([\w-]+)/)?.[1];
+    if (!binaryId) {
+      return jsonResponse(404, { error: 'No photo' });
+    }
+    const token = await medplum.getAccessToken();
+    const resp = await fetch(
+      `${process.env.MEDPLUM_BASE_URL!.replace(/\/$/, '')}/fhir/R4/Binary/${binaryId}`,
+      { headers: { Authorization: `Bearer ${token}`, Accept: 'image/*' } }
+    );
+    if (!resp.ok) {
+      console.error(`Image proxy upstream ${resp.status} for Binary ${binaryId} (token ${token ? 'present' : 'MISSING'})`);
+      return jsonResponse(404, { error: 'Not found' });
+    }
+    const buf = Buffer.from(await resp.arrayBuffer());
+    const contentType = resp.headers.get('content-type') || 'image/jpeg';
+    return {
+      statusCode: 200,
+      headers: {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=3600',
+        'Access-Control-Allow-Origin': '*',
+      },
+      body: buf.toString('base64'),
+      isBase64Encoded: true,
+    };
+  } catch (err) {
+    console.error('Photo proxy error:', err);
+    return jsonResponse(404, { error: 'Not found' });
+  }
+}
+
+function publicPhotoUrl(practitioner: Practitioner, apiDomain: string | undefined): string | null {
+  const photoExt = practitioner.extension?.find((e: any) => e.url === PRACTITIONER_PHOTO_EXT);
+  const stored = (photoExt as any)?.valueUrl || (photoExt as any)?.valueString || '';
+  if (!stored) return null;
+  // Medplum Binary URLs require auth (verified 2026-07-20: direct fetch = 401, and practice
+  // logos had the same silent breakage) — rewrite to this API's own proxy.
+  const base = apiDomain ? `https://${apiDomain}` : '';
+  return `${base}/api/directory/photo/${practitioner.id}`;
+}
+
 function transformPractitioner(
   practitioner: Practitioner,
   org: Organization,
   portalSlug: string,
-  orgModalities: ('in-person' | 'telehealth')[] = []
+  orgModalities: ('in-person' | 'telehealth')[] = [],
+  apiDomain?: string
 ): Omit<TransformedPractitioner, 'nextAvailable'> {
   const name = practitioner.name?.[0];
   const displayName = name
@@ -243,11 +307,7 @@ function transformPractitioner(
     id: practitioner.id!,
     name: displayName,
     credentials,
-    // practitioner-photo-url is documented as valueUrl (fhirExtensions.ts); accept valueString too
-    photo:
-      practitioner.extension?.find((e) => e.url === PRACTITIONER_PHOTO_EXT)?.valueUrl ||
-      getExtensionValue(practitioner, PRACTITIONER_PHOTO_EXT) ||
-      null,
+    photo: publicPhotoUrl(practitioner, apiDomain),
     bio: getExtensionValue(practitioner, PRACTITIONER_BIO_EXT) || '',
     specialties: specialtiesStr.split(',').map((s) => s.trim()).filter(Boolean),
     insurances: insurancesStr.split(',').map((s) => s.trim()).filter(Boolean),
@@ -265,9 +325,7 @@ function transformPractitioner(
 
 // ─── GET /api/directory/practitioners ────────────────────────────────────────
 
-async function handleSearchPractitioners(
-  params: Record<string, string>
-): Promise<ApiGatewayResponse> {
+async function handleSearchPractitioners(params: Record<string, string>, apiDomain?: string): Promise<ApiGatewayResponse> {
   const { state, specialty, insurance, modality, gender, page = '1', limit = '20' } = params;
   const pageNum = parseInt(page, 10) || 1;
   const limitNum = Math.min(parseInt(limit, 10) || 20, 50);
@@ -336,7 +394,7 @@ async function handleSearchPractitioners(
       // Listing a person on a public directory is THEIR opt-in, not their employer's: the
       // org toggle opens the practice, each practitioner must also carry directory-listed.
       if (!getExtensionBoolean(pract, DIRECTORY_LISTED_EXT)) continue;
-      const transformed = transformPractitioner(pract, org, slug, orgModalities);
+      const transformed = transformPractitioner(pract, org, slug, orgModalities, apiDomain);
 
       // Apply additional filters
       if (specialty) {
@@ -446,7 +504,7 @@ async function getNextAvailableSlots(
 
 // ─── GET /api/directory/practitioners/:id ────────────────────────────────────
 
-async function handleGetPractitioner(id: string): Promise<ApiGatewayResponse> {
+async function handleGetPractitioner(id: string, apiDomain?: string): Promise<ApiGatewayResponse> {
   const medplum = await getMedplum();
 
   const practitioner = await medplum.readResource('Practitioner', id);
@@ -472,7 +530,7 @@ async function handleGetPractitioner(id: string): Promise<ApiGatewayResponse> {
   }
 
   const slug = org.identifier?.find((i) => i.system === PORTAL_SLUG_SYSTEM)?.value || '';
-  const transformed = transformPractitioner(practitioner, org, slug, await resolveOrgModalities(medplum, orgId));
+  const transformed = transformPractitioner(practitioner, org, slug, await resolveOrgModalities(medplum, orgId), apiDomain);
 
   // Get full availability for next 30 days
   const now = new Date();

@@ -75,6 +75,12 @@ export class BookingApiStack extends Stack {
     });
 
     api.addRoutes({
+      path: '/api/booking/{slug}/logo',
+      methods: [HttpMethod.GET],
+      integration,
+    });
+
+    api.addRoutes({
       path: '/api/booking/{slug}/availability',
       methods: [HttpMethod.GET],
       integration,
