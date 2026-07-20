@@ -180,10 +180,36 @@ function getExtensionBoolean(resource: any, url: string): boolean {
   return resource.extension?.find((e: any) => e.url === url)?.valueBoolean === true;
 }
 
+/** Modalities offered by an org, from its ACTIVE Locations (virtual => telehealth, physical
+ *  => in-person). Errors return [] and the transform falls back to telehealth-only. */
+async function resolveOrgModalities(
+  medplum: MedplumClient,
+  orgId: string
+): Promise<('in-person' | 'telehealth')[]> {
+  try {
+    const locations = await medplum.searchResources('Location', {
+      _compartment: `Organization/${orgId}`,
+      _count: '50',
+    });
+    const out = new Set<'in-person' | 'telehealth'>();
+    for (const loc of locations as any[]) {
+      if (loc.status && loc.status !== 'active') continue;
+      const virtual = loc.physicalType?.coding?.some(
+        (c: any) => c.system === 'http://terminology.hl7.org/CodeSystem/location-physical-type' && c.code === 'vi'
+      );
+      out.add(virtual ? 'telehealth' : 'in-person');
+    }
+    return [...out];
+  } catch {
+    return [];
+  }
+}
+
 function transformPractitioner(
   practitioner: Practitioner,
   org: Organization,
-  portalSlug: string
+  portalSlug: string,
+  orgModalities: ('in-person' | 'telehealth')[] = []
 ): Omit<TransformedPractitioner, 'nextAvailable'> {
   const name = practitioner.name?.[0];
   const displayName = name
@@ -202,10 +228,16 @@ function transformPractitioner(
   const specialtiesStr = getExtensionValue(practitioner, PRACTITIONER_SPECIALTIES_EXT) || '';
   const insurancesStr = getExtensionValue(practitioner, INSURANCE_ACCEPTED_EXT) || '';
 
-  // Determine modalities from telecom or extensions
-  const modalities: ('in-person' | 'telehealth')[] = [];
-  // Default to both if not specified
-  modalities.push('in-person', 'telehealth');
+  // Modalities come from the org's actual active Locations (resolved once per org by the
+  // caller) — the old hardcoded "both" made every card claim in-person + telehealth
+  // regardless of truth and rendered the modality filter inert.
+  const modalities: ('in-person' | 'telehealth')[] =
+    orgModalities.length > 0 ? orgModalities : ['telehealth'];
+
+  // Languages from the proper FHIR field (Practitioner.communication) — was hardcoded [].
+  const languages = (practitioner.communication || [])
+    .map((c) => c.coding?.[0]?.display || c.coding?.[0]?.code || c.text)
+    .filter((l): l is string => !!l);
 
   return {
     id: practitioner.id!,
@@ -219,7 +251,7 @@ function transformPractitioner(
     bio: getExtensionValue(practitioner, PRACTITIONER_BIO_EXT) || '',
     specialties: specialtiesStr.split(',').map((s) => s.trim()).filter(Boolean),
     insurances: insurancesStr.split(',').map((s) => s.trim()).filter(Boolean),
-    languages: [], // TODO: Extract from practitioner.communication
+    languages,
     modalities,
     gender: practitioner.gender || 'unknown',
     location: { city, state },
@@ -298,9 +330,13 @@ async function handleSearchPractitioners(
     }
 
     const practitioners = await medplum.searchResources('Practitioner', searchParams);
+    const orgModalities = await resolveOrgModalities(medplum, org.id!);
 
     for (const pract of practitioners) {
-      const transformed = transformPractitioner(pract, org, slug);
+      // Listing a person on a public directory is THEIR opt-in, not their employer's: the
+      // org toggle opens the practice, each practitioner must also carry directory-listed.
+      if (!getExtensionBoolean(pract, DIRECTORY_LISTED_EXT)) continue;
+      const transformed = transformPractitioner(pract, org, slug, orgModalities);
 
       // Apply additional filters
       if (specialty) {
@@ -431,8 +467,12 @@ async function handleGetPractitioner(id: string): Promise<ApiGatewayResponse> {
     return jsonResponse(404, { error: 'Practitioner not in directory' });
   }
 
+  if (!getExtensionBoolean(practitioner, DIRECTORY_LISTED_EXT)) {
+    return jsonResponse(404, { error: 'Practitioner not in directory' });
+  }
+
   const slug = org.identifier?.find((i) => i.system === PORTAL_SLUG_SYSTEM)?.value || '';
-  const transformed = transformPractitioner(practitioner, org, slug);
+  const transformed = transformPractitioner(practitioner, org, slug, await resolveOrgModalities(medplum, orgId));
 
   // Get full availability for next 30 days
   const now = new Date();
