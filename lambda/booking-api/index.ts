@@ -149,6 +149,15 @@ function scheduleBelongsToOrg(schedule: { meta?: { account?: { reference?: strin
   return (schedule.meta?.compartment || []).some((c) => c.reference === orgRef);
 }
 
+
+/** Per-location custom-hours schedules (Location actor) belong to the native scheduling
+ * engine only — the legacy merge-all-schedules availability here must never read them,
+ * before OR after they flip active (progress2-base
+ * docs/sp-per-location-availability-research-2026-07-19.md, step 4 guard). */
+function excludeLocationSchedules<T extends { actor?: { reference?: string }[] }>(schedules: T[]): T[] {
+  return schedules.filter((s) => !(s.actor || []).some((a) => a.reference?.startsWith('Location/')));
+}
+
 export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayResponse> {
   // Handle CORS preflight
   if (event.requestContext.http.method === 'OPTIONS') {
@@ -417,10 +426,10 @@ async function handleGetAvailability(
       schedules = [];
     }
   } else {
-    schedules = await searchAllBounded<any>(medplum, 'Schedule', {
+    schedules = excludeLocationSchedules(await searchAllBounded<any>(medplum, 'Schedule', {
       _compartment: `Organization/${organizationId}`,
       active: 'true',
-    }, SCHEDULES_HARD_MAX);
+    }, SCHEDULES_HARD_MAX));
   }
 
   if (schedules.length === 0) {
@@ -514,10 +523,10 @@ async function handleGetAvailabilityDates(
       schedules = [];
     }
   } else {
-    schedules = await searchAllBounded<any>(medplum, 'Schedule', {
+    schedules = excludeLocationSchedules(await searchAllBounded<any>(medplum, 'Schedule', {
       _compartment: `Organization/${organizationId}`,
       active: 'true',
-    }, SCHEDULES_HARD_MAX);
+    }, SCHEDULES_HARD_MAX));
   }
 
   if (schedules.length === 0) {

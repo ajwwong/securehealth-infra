@@ -14,6 +14,13 @@
 
 import { MedplumClient, Practitioner, Organization, Schedule } from '@medplum/core';
 
+/** Per-location custom-hours schedules (Location actor) are native-scheduling-only —
+ * legacy availability must never read them (step-4 coexistence guard). */
+function excludeLocationSchedules<T extends { actor?: { reference?: string }[] }>(schedules: T[]): T[] {
+  return schedules.filter((s) => !(s.actor || []).some((a) => a.reference?.startsWith('Location/')));
+}
+
+
 const BASE_EXT = 'https://progressnotes.app/fhir/StructureDefinition';
 const DIRECTORY_LISTED_EXT = `${BASE_EXT}/directory-listed`;
 const PRACTITIONER_BIO_EXT = `${BASE_EXT}/practitioner-bio`;
@@ -338,11 +345,13 @@ async function getNextAvailableSlots(
   count: number
 ): Promise<Array<{ scheduleId: string; start: string; end: string; modality: 'in-person' | 'telehealth' }>> {
   try {
-    const schedules = await medplum.searchResources('Schedule', {
-      actor: `Practitioner/${practitionerId}`,
-      active: 'true',
-      _count: '5',
-    });
+    const schedules = excludeLocationSchedules(
+      await medplum.searchResources('Schedule', {
+        actor: `Practitioner/${practitionerId}`,
+        active: 'true',
+        _count: '5',
+      })
+    );
 
     if (schedules.length === 0) return [];
 
@@ -419,11 +428,13 @@ async function handleGetPractitioner(id: string): Promise<ApiGatewayResponse> {
   const endDate = new Date(now);
   endDate.setDate(endDate.getDate() + 30);
 
-  const schedules = await medplum.searchResources('Schedule', {
-    actor: `Practitioner/${id}`,
-    active: 'true',
-    _count: '10',
-  });
+  const schedules = excludeLocationSchedules(
+    await medplum.searchResources('Schedule', {
+      actor: `Practitioner/${id}`,
+      active: 'true',
+      _count: '10',
+    })
+  );
 
   const allSlots: Array<{ scheduleId: string; start: string; end: string; modality: 'in-person' | 'telehealth' }> = [];
 
