@@ -243,20 +243,38 @@ async function handleGetPractice(slug: string): Promise<ApiGatewayResponse> {
     }, SCHEDULES_HARD_MAX),
   ]);
 
-  // Filter locations to public ones
+  // SP-parity location visibility (owner ruling 2026-07-19): EVERY bookable location is
+  // listed in the wizard by name; `location-display-publicly` controls only whether the
+  // STREET ADDRESS is shown. Rooms (physicalType 'ro') are internal and never listed.
+  // Telehealth ('vi') addresses are never shown regardless of the flag (SP: "Your Telehealth
+  // address will always be hidden from public view"). Missing physicalType = legacy office.
   const publicLocations = locations
     .filter((loc) => {
-      const displayPublicly = loc.extension?.find((e) => e.url === LOCATION_DISPLAY_PUBLICLY_EXT);
-      return displayPublicly?.valueBoolean === true;
+      const physical = loc.physicalType?.coding?.find(
+        (c: { system?: string; code?: string }) =>
+          c.system === 'http://terminology.hl7.org/CodeSystem/location-physical-type'
+      )?.code;
+      return physical !== 'ro';
     })
-    .map((loc) => ({
-      id: loc.id,
-      name: loc.name,
-      address: loc.address
-        ? `${loc.address.line?.join(', ') || ''}, ${loc.address.city || ''}, ${loc.address.state || ''} ${loc.address.postalCode || ''}`.trim()
-        : undefined,
-      phone: loc.telecom?.find((t) => t.system === 'phone')?.value,
-    }));
+    .map((loc) => {
+      const physical = loc.physicalType?.coding?.find(
+        (c: { system?: string; code?: string }) =>
+          c.system === 'http://terminology.hl7.org/CodeSystem/location-physical-type'
+      )?.code;
+      const isVirtual = physical === 'vi';
+      const showAddress =
+        !isVirtual &&
+        loc.extension?.find((e) => e.url === LOCATION_DISPLAY_PUBLICLY_EXT)?.valueBoolean === true;
+      return {
+        id: loc.id,
+        name: loc.name,
+        address:
+          showAddress && loc.address
+            ? `${loc.address.line?.join(', ') || ''}, ${loc.address.city || ''}, ${loc.address.state || ''} ${loc.address.postalCode || ''}`.trim()
+            : undefined,
+        phone: loc.telecom?.find((t) => t.system === 'phone')?.value,
+      };
+    });
 
   // Filter services to online + new clients
   const services = ((servicesResult as any)?.services || [])
