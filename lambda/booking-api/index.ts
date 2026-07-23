@@ -701,6 +701,17 @@ async function handlePostRequest(slug: string, body: any, sourceIp?: string): Pr
         guardianLastName: body.guardianLastName || undefined,
         guardianEmail: body.guardianEmail || undefined,
         guardianPhone: body.guardianPhone || undefined,
+        // Marketing attribution captured by the booking page (bot sanitizes + caps; the
+        // shape guard here just keeps non-strings out of the payload)
+        utmSource: attributionString(body.utmSource),
+        utmMedium: attributionString(body.utmMedium),
+        utmCampaign: attributionString(body.utmCampaign),
+        utmTerm: attributionString(body.utmTerm),
+        utmContent: attributionString(body.utmContent),
+        gclid: attributionString(body.gclid),
+        fbclid: attributionString(body.fbclid),
+        referrer: attributionString(body.referrer),
+        landingPage: attributionString(body.landingPage),
         honeypot: body.honeypot || undefined,
         submittedAt: body.submittedAt || undefined,
         clientIp: sourceIp || undefined,
@@ -717,6 +728,10 @@ async function handlePostRequest(slug: string, body: any, sourceIp?: string): Pr
     console.error('Failed to execute new-client-request-handler bot:', err);
     return jsonResponse(500, { success: false, error: 'Failed to process request' });
   }
+}
+
+function attributionString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.slice(0, 500) : undefined;
 }
 
 // ─── POST /api/booking/{slug}/contact ─────────────────────────────────────

@@ -42,10 +42,26 @@
     el.appendChild(btn);
   }
 
+  var ATTRIBUTION_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'fbclid'];
+
   function buildSrc(slug, practitioner, widgetType) {
     var page = widgetType === 'contact' ? '/contact' : '/book';
     var url = 'https://' + slug + '.securehealth.me' + page + '?embed=true';
     if (practitioner && widgetType !== 'contact') url += '&practitioner=' + encodeURIComponent(practitioner);
+    // Forward the parent page's ad/campaign params into the iframe — the booking page can't
+    // see the parent URL, so attribution would otherwise die at the widget boundary. ph_page /
+    // ph_ref carry the parent page URL and its referrer for the same reason.
+    try {
+      var parentParams = new URLSearchParams(window.location.search);
+      for (var i = 0; i < ATTRIBUTION_PARAMS.length; i++) {
+        var v = parentParams.get(ATTRIBUTION_PARAMS[i]);
+        if (v) url += '&' + ATTRIBUTION_PARAMS[i] + '=' + encodeURIComponent(v.slice(0, 500));
+      }
+      url += '&ph_page=' + encodeURIComponent(window.location.href.slice(0, 500));
+      if (document.referrer) url += '&ph_ref=' + encodeURIComponent(document.referrer.slice(0, 500));
+    } catch (e) {
+      // Attribution is best-effort — never block the widget itself.
+    }
     return url;
   }
 
