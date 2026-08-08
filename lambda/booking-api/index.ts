@@ -141,6 +141,7 @@ function jsonResponse(statusCode: number, body: unknown): ApiGatewayResponse {
 // treat commas as OR-lists), so constrain them to their expected shapes before use.
 const SLUG_PATTERN = /^[a-z0-9-]{1,64}$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** True when the schedule belongs to the given organization (account or compartment). */
 function scheduleBelongsToOrg(schedule: { meta?: { account?: { reference?: string }; compartment?: { reference?: string }[] } }, organizationId: string): boolean {
@@ -449,7 +450,7 @@ async function handleGetAvailability(
   slug: string,
   queryParams: Record<string, string>
 ): Promise<ApiGatewayResponse> {
-  const { date, serviceCode, scheduleId } = queryParams;
+  const { date, serviceCode, scheduleId, locationId } = queryParams;
 
   if (!date || !DATE_PATTERN.test(date)) {
     return jsonResponse(400, { error: 'Missing or invalid date parameter (YYYY-MM-DD)' });
@@ -506,6 +507,9 @@ async function handleGetAvailability(
         endDate: `${date}T23:59:59`,
         serviceType: serviceCode || undefined,
         organizationId,
+        // Client-chosen location: the bot intersects per-location custom hours (native
+        // engine orgs only); ignored otherwise. Format-guarded — untrusted public input.
+        locationId: locationId && UUID_PATTERN.test(locationId) ? locationId : undefined,
       },
       'application/json'
     ).then((result: any) => ({ result, scheduleId: schedule.id! }))
@@ -547,7 +551,7 @@ async function handleGetAvailabilityDates(
   slug: string,
   queryParams: Record<string, string>
 ): Promise<ApiGatewayResponse> {
-  const { startDate, endDate, serviceCode, scheduleId } = queryParams;
+  const { startDate, endDate, serviceCode, scheduleId, locationId } = queryParams;
 
   if (!startDate || !endDate || !DATE_PATTERN.test(startDate) || !DATE_PATTERN.test(endDate)) {
     return jsonResponse(400, { error: 'Missing or invalid startDate/endDate parameters (YYYY-MM-DD)' });
@@ -602,6 +606,7 @@ async function handleGetAvailabilityDates(
         serviceType: serviceCode || undefined,
         organizationId,
         datesOnly: true,
+        locationId: locationId && UUID_PATTERN.test(locationId) ? locationId : undefined,
       },
       'application/json'
     )
