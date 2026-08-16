@@ -38,6 +38,9 @@ const PRACTITIONER_BIO_EXT = `${BASE_EXT}/practitioner-bio`;
 const PRACTITIONER_PHOTO_EXT = `${BASE_EXT}/practitioner-photo-url`;
 const PRACTITIONER_SPECIALTIES_EXT = `${BASE_EXT}/practitioner-specialties`;
 const INSURANCE_ACCEPTED_EXT = `${BASE_EXT}/insurance-accepted`;
+const PRACTITIONER_APPROACHES_EXT = `${BASE_EXT}/practitioner-approaches`;
+const PRACTITIONER_CREDENTIAL_TIER_EXT = `${BASE_EXT}/practitioner-credential-tier`;
+const PRACTITIONER_CERTIFICATIONS_EXT = `${BASE_EXT}/practitioner-certifications`;
 const ACCOUNT_DELETED_EXT = `${BASE_EXT}/account-deleted`;
 const PORTAL_SLUG_SYSTEM = 'https://progressnotes.app/portal-slug';
 
@@ -129,7 +132,12 @@ export async function handler(event: ApiGatewayEvent): Promise<ApiGatewayRespons
       return await handleGetFilters();
     }
 
-    // POST /api/directory/booking-request
+    // POST /api/directory/apply - practitioner listing application
+    if (method === 'POST' && path === '/api/directory/apply') {
+      const body = event.body ? JSON.parse(event.body) : {};
+      return await handleApply(body);
+    }
+
     // POST /api/cora/check-email - Check if email is associated with a deleted Cora account
     if (method === 'POST' && path === '/api/cora/check-email') {
       const body = event.body ? JSON.parse(event.body) : {};
@@ -155,6 +163,12 @@ interface TransformedPractitioner {
   photo: string | null;
   bio: string;
   specialties: string[];
+  /** Somatic therapy approaches (display names) — FindSomatic axis, distinct from
+   *  modalities (session format). */
+  approaches: string[];
+  /** 'licensed' | 'pre-licensed' | 'certified' | '' — drives the credential badge. */
+  credentialTier: string;
+  certifications: string[];
   insurances: string[];
   languages: string[];
   modalities: ('in-person' | 'telehealth')[];
@@ -294,6 +308,8 @@ function transformPractitioner(
 
   const specialtiesStr = getExtensionValue(practitioner, PRACTITIONER_SPECIALTIES_EXT) || '';
   const insurancesStr = getExtensionValue(practitioner, INSURANCE_ACCEPTED_EXT) || '';
+  const approachesStr = getExtensionValue(practitioner, PRACTITIONER_APPROACHES_EXT) || '';
+  const certificationsStr = getExtensionValue(practitioner, PRACTITIONER_CERTIFICATIONS_EXT) || '';
 
   // Modalities come from the org's actual active Locations (resolved once per org by the
   // caller) — the old hardcoded "both" made every card claim in-person + telehealth
@@ -313,6 +329,9 @@ function transformPractitioner(
     photo: publicPhotoUrl(practitioner, apiDomain),
     bio: getExtensionValue(practitioner, PRACTITIONER_BIO_EXT) || '',
     specialties: specialtiesStr.split(',').map((s) => s.trim()).filter(Boolean),
+    approaches: approachesStr.split(',').map((s) => s.trim()).filter(Boolean),
+    credentialTier: getExtensionValue(practitioner, PRACTITIONER_CREDENTIAL_TIER_EXT) || '',
+    certifications: certificationsStr.split(',').map((s) => s.trim()).filter(Boolean),
     insurances: insurancesStr.split(',').map((s) => s.trim()).filter(Boolean),
     languages,
     modalities,
@@ -329,7 +348,7 @@ function transformPractitioner(
 // ─── GET /api/directory/practitioners ────────────────────────────────────────
 
 async function handleSearchPractitioners(params: Record<string, string>, apiDomain?: string): Promise<ApiGatewayResponse> {
-  const { state, specialty, insurance, modality, gender, language, page = '1', limit = '20' } = params;
+  const { state, specialty, insurance, modality, gender, language, approach, page = '1', limit = '20' } = params;
   const pageNum = parseInt(page, 10) || 1;
   const limitNum = Math.min(parseInt(limit, 10) || 20, 50);
   const offset = (pageNum - 1) * limitNum;
@@ -405,6 +424,13 @@ async function handleSearchPractitioners(params: Record<string, string>, apiDoma
           (s) => s.toLowerCase().includes(specialty.toLowerCase())
         );
         if (!hasSpecialty) continue;
+      }
+
+      if (approach) {
+        const hasApproach = transformed.approaches.some(
+          (a) => a.toLowerCase().includes(approach.toLowerCase())
+        );
+        if (!hasApproach) continue;
       }
 
       if (insurance && insurance !== 'selfpay') {
@@ -649,9 +675,76 @@ async function handleGetFilters(): Promise<ApiGatewayResponse> {
     'Portuguese', 'Russian', 'Japanese', 'Korean', 'Vietnamese', 'Tagalog', 'Arabic',
   ].map((l) => ({ value: l, label: l }));
 
-  return jsonResponse(200, { states, specialties, insurances, languages });
+  // Somatic approaches — display names, MIRRORED with progress2-base DirectorySettings
+  // APPROACH_OPTIONS and the FindSomatic frontend (substring-matched by the approach filter).
+  const approaches = [
+    'Somatic Experiencing', 'Hakomi', 'Sensorimotor Psychotherapy', 'Somatic IFS',
+    'Somatic Attachment Therapy', 'Polyvagal-Informed Therapy', 'TRE (Tension & Trauma Releasing)',
+    'Breathwork', 'Dance/Movement Therapy', 'Body-Centered Gestalt', 'EMDR',
+    'Other Somatic Approach',
+  ].map((a) => ({ value: a, label: a }));
+
+  return jsonResponse(200, { states, specialties, insurances, languages, approaches });
 }
 
+
+// ─── POST /api/directory/apply ───────────────────────────────────────────────
+
+/** Practitioner listing application from the public /practitioners form. Stored as a
+ * Communication with the practitioner-application category — the ONLY write this
+ * client's AccessPolicy permits (criteria-scoped; updated 2026-08-16). Review queue:
+ * search Communications by that category, status=in-progress. */
+const APPLICATION_CATEGORY = 'https://progressnotes.app/fhir/directory';
+
+async function handleApply(body: any): Promise<ApiGatewayResponse> {
+  // Honeypot: real form leaves this empty; bots fill it. Answer 200 so they move on.
+  if (body?.website_url) {
+    return jsonResponse(200, { ok: true });
+  }
+
+  const str = (v: unknown, max: number): string =>
+    typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim().slice(0, max) : '';
+
+  const name = str(body?.name, 120);
+  const email = str(body?.email, 160);
+  const country = str(body?.country, 60);
+  const state = str(body?.state, 40);
+  const tier = str(body?.tier, 30);
+  const credential = str(body?.credential, 300);
+  const site = str(body?.site, 200);
+  const note = str(body?.note, 1000);
+
+  if (!name || !email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return jsonResponse(400, { error: 'Name and a valid email are required.' });
+  }
+  if (!['licensed', 'pre-licensed', 'certified'].includes(tier)) {
+    return jsonResponse(400, { error: 'Please choose a credential status.' });
+  }
+  if (!credential) {
+    return jsonResponse(400, { error: 'Please describe your license or certification.' });
+  }
+
+  const medplum = await getMedplum();
+  await medplum.createResource({
+    resourceType: 'Communication',
+    status: 'in-progress',
+    category: [
+      {
+        coding: [
+          { system: APPLICATION_CATEGORY, code: 'practitioner-application', display: 'Practitioner listing application' },
+        ],
+      },
+    ],
+    sent: new Date().toISOString(),
+    payload: [
+      {
+        contentString: JSON.stringify({ name, email, country, state, tier, credential, site, note }),
+      },
+    ],
+  } as any);
+
+  return jsonResponse(200, { ok: true });
+}
 
 // ─── POST /api/cora/check-email ──────────────────────────────────────────────
 

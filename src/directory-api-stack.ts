@@ -95,7 +95,13 @@ export class DirectoryApiStack extends Stack {
       integration,
     });
 
-    // Submit booking request
+    // Practitioner listing application (public form on /practitioners)
+    api.addRoutes({
+      path: '/api/directory/apply',
+      methods: [HttpMethod.POST],
+      integration,
+    });
+
     // Cora: Check email deletion status
     api.addRoutes({
       path: '/api/cora/check-email',
