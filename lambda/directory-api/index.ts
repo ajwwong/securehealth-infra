@@ -41,6 +41,7 @@ const INSURANCE_ACCEPTED_EXT = `${BASE_EXT}/insurance-accepted`;
 const PRACTITIONER_APPROACHES_EXT = `${BASE_EXT}/practitioner-approaches`;
 const PRACTITIONER_CREDENTIAL_TIER_EXT = `${BASE_EXT}/practitioner-credential-tier`;
 const PRACTITIONER_CERTIFICATIONS_EXT = `${BASE_EXT}/practitioner-certifications`;
+const PRACTITIONER_WEBSITE_EXT = `${BASE_EXT}/practitioner-website`;
 const ACCOUNT_DELETED_EXT = `${BASE_EXT}/account-deleted`;
 const PORTAL_SLUG_SYSTEM = 'https://progressnotes.app/portal-slug';
 
@@ -169,6 +170,9 @@ interface TransformedPractitioner {
   /** 'licensed' | 'pre-licensed' | 'certified' | '' — drives the credential badge. */
   credentialTier: string;
   certifications: string[];
+  /** Practitioner's own site — rung-1 external listees get a visit-website CTA
+   *  instead of the Book button (they have no booking page / portal slug). */
+  website: string;
   insurances: string[];
   languages: string[];
   modalities: ('in-person' | 'telehealth')[];
@@ -331,6 +335,10 @@ function transformPractitioner(
     specialties: specialtiesStr.split(',').map((s) => s.trim()).filter(Boolean),
     approaches: approachesStr.split(',').map((s) => s.trim()).filter(Boolean),
     credentialTier: getExtensionValue(practitioner, PRACTITIONER_CREDENTIAL_TIER_EXT) || '',
+    website: (() => {
+      const e = practitioner.extension?.find((x: any) => x.url === PRACTITIONER_WEBSITE_EXT);
+      return ((e as any)?.valueUrl || (e as any)?.valueString || '') as string;
+    })(),
     certifications: certificationsStr.split(',').map((s) => s.trim()).filter(Boolean),
     insurances: insurancesStr.split(',').map((s) => s.trim()).filter(Boolean),
     languages,
