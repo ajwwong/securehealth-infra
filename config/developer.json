@@ -3,5 +3,5 @@
   "sslCertArn": "arn:aws:acm:us-east-1:277707120168:certificate/e8fc6441-b6b9-4bf4-892c-de420b7f60f6",
   "hostedZoneId": "Z073531011OZCMOKPPRRC",
   "hostedZoneName": "practiceharbor.com",
-  "apiOrigin": "https://api.progressnotes.app"
+  "apiOrigin": "https://api.practiceharbor.com https://api.progressnotes.app"
 }
