@@ -86,7 +86,11 @@ export class DeveloperPortalStack extends Stack {
       },
       domainNames: [config.domainName],
       certificate: Certificate.fromCertificateArn(this, 'Certificate', config.sslCertArn),
-      // No SPA fallback: this is a real static site; a missing path is a 404.
+      // A private-bucket origin answers 403 for a missing key; map both to a real 404 page.
+      errorResponses: [
+        { httpStatus: 403, responseHttpStatus: 404, responsePagePath: '/404.html', ttl: Duration.minutes(5) },
+        { httpStatus: 404, responseHttpStatus: 404, responsePagePath: '/404.html', ttl: Duration.minutes(5) },
+      ],
     });
 
     const zone = HostedZone.fromHostedZoneAttributes(this, 'Zone', {
