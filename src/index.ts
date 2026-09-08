@@ -5,6 +5,7 @@ import { StaticSiteStack } from './static-site-stack';
 import { BookingApiStack } from './booking-api-stack';
 import { DirectoryApiStack } from './directory-api-stack';
 import { WidgetStack } from './widget-stack';
+import { DeveloperPortalStack } from './developer-portal-stack';
 
 function main(): void {
   const app = new App();
@@ -71,6 +72,23 @@ function main(): void {
       accountNumber: config.accountNumber,
       domainName: widgetConfig.domainName,
       sslCertArn: widgetConfig.sslCertArn,
+    });
+  }
+
+  // Developer portal (developer.practiceharbor.com): requires config/developer.json
+  const developerConfigPath = resolve('config/developer.json');
+  if (existsSync(developerConfigPath)) {
+    const dev = JSON.parse(readFileSync(developerConfigPath, 'utf-8'));
+    new DeveloperPortalStack(app, `${config.name}-DeveloperPortal`, {
+      stackName: `${config.name}-DeveloperPortal`,
+      name: config.name,
+      region: config.region,
+      accountNumber: config.accountNumber,
+      domainName: dev.domainName,
+      sslCertArn: dev.sslCertArn,
+      hostedZoneId: dev.hostedZoneId,
+      hostedZoneName: dev.hostedZoneName,
+      apiOrigin: dev.apiOrigin,
     });
   }
 
