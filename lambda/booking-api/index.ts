@@ -35,6 +35,12 @@ function readOrgTimezone(org: {
   return tzExt?.valueCode || tzExt?.valueString;
 }
 const PRESCREENER_QUESTIONS_EXT = `${BASE_EXT}/booking-prescreener-questions`;
+// Availability blocks (progress2-base docs/sp-availability-blocks-plan-2026-09-12.md): per-location
+// schedules are stored active:false, keyed practitioner:location[:block], and list the services
+// offered there as `offeredService` sub-extensions of OUR scheduling-parameters extension.
+const SCHEDULE_LOCATION_EXT = `${BASE_EXT}/schedule-location`;
+const LOCATION_SCHEDULE_IDENTIFIER_SYSTEM = 'https://progressnotes.app/fhir/location-schedule';
+const OUR_SCHEDULING_PARAMETERS_URL = 'http://medplum.com/fhir/StructureDefinition/scheduling-parameters';
 
 // Reuse MedplumClient across warm Lambda invocations
 let medplumClient: MedplumClient | null = null;
@@ -293,7 +299,7 @@ async function handleGetPractice(slug: string, apiDomain?: string): Promise<ApiG
   const organizationId = org.id!;
 
   // Fetch locations, services, and schedules in parallel
-  const [locations, servicesResult, schedules] = await Promise.all([
+  const [locations, servicesResult, schedules, locationSchedules] = await Promise.all([
     searchAllBounded<any>(medplum, 'Location', {
       organization: `Organization/${organizationId}`,
     }, LOCATIONS_HARD_MAX),
@@ -306,7 +312,31 @@ async function handleGetPractice(slug: string, apiDomain?: string): Promise<ApiG
       _compartment: `Organization/${organizationId}`,
       active: 'true',
     }, SCHEDULES_HARD_MAX),
+    searchAllBounded<any>(medplum, 'Schedule', {
+      _compartment: `Organization/${organizationId}`,
+      identifier: `${LOCATION_SCHEDULE_IDENTIFIER_SYSTEM}|`,
+    }, SCHEDULES_HARD_MAX).catch(() => [] as any[]),
   ]);
+  // Per practitioner: the locations their availability blocks cover and the services offered at each
+  // (null = every service). A practitioner with no block/location schedules gets no entry, and the
+  // wizard keeps offering every practice location as before.
+  const availabilityLocationsByPract = new Map<string, Array<{ locationId: string; serviceCodes: string[] | null }>>();
+  for (const ls of locationSchedules) {
+    const practId = (ls.actor || []).find((a: any) => a.reference?.startsWith('Practitioner/'))?.reference?.replace('Practitioner/', '');
+    const locationId = (ls.extension || []).find((e: any) => e.url === SCHEDULE_LOCATION_EXT)?.valueReference?.reference?.replace('Location/', '');
+    if (!practId || !locationId) continue;
+    const ours = (ls.extension || []).find((e: any) => e.url === OUR_SCHEDULING_PARAMETERS_URL)?.extension || [];
+    const codes = ours.filter((x: any) => x.url === 'offeredService' && x.valueString).map((x: any) => x.valueString as string);
+    const list = availabilityLocationsByPract.get(practId) || [];
+    const existing = list.find((l) => l.locationId === locationId);
+    if (existing) {
+      // Several blocks at one location: union of their services (null = all wins).
+      existing.serviceCodes = existing.serviceCodes === null || codes.length === 0 ? null : [...new Set([...existing.serviceCodes, ...codes])];
+    } else {
+      list.push({ locationId, serviceCodes: codes.length ? codes : null });
+    }
+    availabilityLocationsByPract.set(practId, list);
+  }
 
   // SP-parity location visibility (owner ruling 2026-07-19): EVERY bookable location is
   // listed in the wizard by name; `location-display-publicly` controls only whether the
@@ -383,17 +413,19 @@ async function handleGetPractice(slug: string, apiDomain?: string): Promise<ApiG
       (e: any) => e.url === ALLOW_NEW_CLIENTS_EXT
     )?.valueBoolean ?? true;
 
+    const availabilityLocations = availabilityLocationsByPract.get(practId);
     return {
       id: practId,
       name: displayName,
       credentials: credentials || undefined,
       scheduleId,
       acceptingNewClients: practAccepting,
+      ...(availabilityLocations?.length ? { availabilityLocations } : {}),
     };
   });
   // Skip practitioners we can't read (same tolerance as the old per-read try/catch)
   const practitioners = practResults
-    .filter((r): r is PromiseFulfilledResult<{ id: string; name: string; credentials?: string; scheduleId: string; acceptingNewClients: boolean }> => r.status === 'fulfilled')
+    .filter((r): r is PromiseFulfilledResult<{ id: string; name: string; credentials?: string; scheduleId: string; acceptingNewClients: boolean; availabilityLocations?: Array<{ locationId: string; serviceCodes: string[] | null }> }> => r.status === 'fulfilled')
     .map((r) => r.value);
 
   // Practice info
