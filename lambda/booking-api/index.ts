@@ -299,7 +299,7 @@ async function handleGetPractice(slug: string, apiDomain?: string): Promise<ApiG
   const organizationId = org.id!;
 
   // Fetch locations, services, and schedules in parallel
-  const [locations, servicesResult, schedules, locationSchedules] = await Promise.all([
+  const [allLocations, servicesResult, schedules, locationSchedules] = await Promise.all([
     searchAllBounded<any>(medplum, 'Location', {
       organization: `Organization/${organizationId}`,
     }, LOCATIONS_HARD_MAX),
@@ -317,6 +317,10 @@ async function handleGetPractice(slug: string, apiDomain?: string): Promise<ApiG
       identifier: `${LOCATION_SCHEDULE_IDENTIFIER_SYSTEM}|`,
     }, SCHEDULES_HARD_MAX).catch(() => [] as any[]),
   ]);
+  // A location deactivated under Settings › Practice (in use by past appointments, so it is set
+  // inactive rather than deleted) must not be offered to new clients. Locations carry an explicit
+  // status; only 'inactive' / 'suspended' are excluded, so a legacy record without one still lists.
+  const locations = allLocations.filter((l: any) => l.status !== 'inactive' && l.status !== 'suspended');
   // Per practitioner: the locations their availability blocks cover and the services offered at each
   // (null = every service). A practitioner with no block/location schedules gets no entry, and the
   // wizard keeps offering every practice location as before.
