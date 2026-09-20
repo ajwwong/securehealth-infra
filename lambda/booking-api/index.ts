@@ -19,6 +19,10 @@ const ALLOW_NEW_CLIENTS_EXT = `${BASE_EXT}/allow-new-clients`;
 const ALLOW_NEW_COUPLES_EXT = `${BASE_EXT}/allow-new-couples`;
 const LOCATION_DISPLAY_PUBLICLY_EXT = `${BASE_EXT}/location-display-publicly`;
 const PRACTICE_LOGO_BINARY_ID_EXT = `${BASE_EXT}/practice-logo-binary-id`;
+// "Clients can choose their portal language" (progress2-base EXTENSIONS.PORTAL_LANGUAGE_CHOICE).
+// The portal's PRE-LOGIN pages (sign-in, password, booking, contact) read it here; signed-in
+// pages read the Organization directly.
+const PORTAL_LANGUAGE_CHOICE_EXT = `${BASE_EXT}/portal-language-choice`;
 // Org timezones are stored at the HL7 URL (as valueCode) by registration + the 2026-06-30
 // migration; the progressnotes URL is legacy. Reading only the legacy URL/valueString left
 // `timezone` undefined for EVERY practice, so the public booking page fell back to Pacific
@@ -283,6 +287,9 @@ async function handleGetPractice(slug: string, apiDomain?: string): Promise<ApiG
   // A paused practice returns a slim payload — no service/practitioner roster, no extra fetches.
   const acceptingNewClients =
     org.extension?.find((e) => e.url === ALLOW_NEW_CLIENTS_EXT)?.valueBoolean === true;
+  // Independent of booking being open: a paused practice's sign-in page still offers Spanish.
+  const portalLanguageChoice =
+    org.extension?.find((e) => e.url === PORTAL_LANGUAGE_CHOICE_EXT)?.valueBoolean === true;
   if (!acceptingNewClients) {
     const pausedLogoExt = org.extension?.find((e) => e.url === PRACTICE_LOGO_BINARY_ID_EXT);
     return jsonResponse(200, {
@@ -290,6 +297,7 @@ async function handleGetPractice(slug: string, apiDomain?: string): Promise<ApiG
       phone: org.telecom?.find((t) => t.system === 'phone')?.value,
       logoUrl: logoProxy(!!pausedLogoExt?.valueString),
       acceptingNewClients: false,
+      portalLanguageChoice,
       locations: [],
       services: [],
       practitioners: [],
@@ -474,6 +482,7 @@ async function handleGetPractice(slug: string, apiDomain?: string): Promise<ApiG
     allowCouples,
     prescreener,
     acceptingNewClients: true,
+    portalLanguageChoice,
     locations: publicLocations,
     services,
     practitioners: acceptingPractitioners,
