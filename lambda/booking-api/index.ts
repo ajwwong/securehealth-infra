@@ -14,6 +14,7 @@
 import { MedplumClient } from '@medplum/core';
 
 const PORTAL_SLUG_SYSTEM = 'https://progressnotes.app/portal-slug';
+const LICENSE_TYPE_SYSTEM = 'https://progressnotes.app/fhir/CodeSystem/license-type';
 const BASE_EXT = 'https://progressnotes.app/fhir/StructureDefinition';
 const ALLOW_NEW_CLIENTS_EXT = `${BASE_EXT}/allow-new-clients`;
 const ALLOW_NEW_COUPLES_EXT = `${BASE_EXT}/allow-new-couples`;
@@ -416,10 +417,16 @@ async function handleGetPractice(slug: string, apiDomain?: string): Promise<ApiG
     const displayName = name
       ? `${name.prefix?.join(' ') || ''} ${name.given?.join(' ') || ''} ${name.family || ''}`.trim()
       : 'Provider';
-    const credentials = pract.qualification
-      ?.map((q) => q.code?.text || q.code?.coding?.[0]?.display)
-      .filter(Boolean)
-      .join(', ');
+    // SP parity (owner ruling 2026-09-22): the line under the name is the clinician's own specialty
+    // text only — license codes ("LP", "LPC-IT") are never shown, and a clinician licensed in two
+    // states no longer reads "LP, LP". Trimmed and de-duplicated case-insensitively; blank if unset.
+    const specialtyLines = new Map<string, string>();
+    for (const q of pract.qualification || []) {
+      if (q.code?.coding?.some((c) => c.system === LICENSE_TYPE_SYSTEM)) continue;
+      const text = (q.code?.text || q.code?.coding?.[0]?.display || '').trim();
+      if (text && !specialtyLines.has(text.toLowerCase())) specialtyLines.set(text.toLowerCase(), text);
+    }
+    const credentials = [...specialtyLines.values()].join(', ');
     // Check per-practitioner accepting status (default true if not set)
     const practAccepting = pract.extension?.find(
       (e: any) => e.url === ALLOW_NEW_CLIENTS_EXT
